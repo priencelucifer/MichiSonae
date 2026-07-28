@@ -40,6 +40,7 @@ def reset_database() -> None:
         connection.execute(
             """
             TRUNCATE
+                public.operations_audit_events,
                 public.security_audit_events,
                 public.security_rate_limits,
                 public.auth_access_tokens,
@@ -53,6 +54,7 @@ def reset_database() -> None:
                 public.hazard_projections,
                 public.hazard_contributors,
                 public.hazard_clusters,
+                public.retained_contributor_rollups,
                 public.observation_outbox,
                 public.road_observations
             RESTART IDENTITY

@@ -8,4 +8,6 @@
 - [ADR 0004: retry-safe hazard projection](adr/0004-retry-safe-hazard-projection.md)
 - [ADR 0005: cacheable regional hazard snapshots](adr/0005-cacheable-regional-hazard-snapshots.md)
 - [ADR 0006: account-free installation security](adr/0006-account-free-installation-security.md)
+- [ADR 0007: guarded data lifecycle and rebuilds](adr/0007-guarded-data-lifecycle-and-rebuilds.md)
+- [PostgreSQL backup and recovery runbook](operations/BACKUP_RESTORE.md)
 - [Phase 0 roadmap](roadmap/PHASE_0.md)

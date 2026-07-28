@@ -120,6 +120,44 @@ JSON content type and request size are enforced before endpoint processing.
 Security audit rows contain event codes, pseudonymized IPs, and minimized
 details—never credentials, raw request bodies, or trip sequences.
 
+## Lifecycle and recovery operations
+
+`michi-maintain` is the supported operator interface for retention,
+dead-letter handling, consistency checks, and projection recovery.
+
+```powershell
+# Preview is the default and never deletes.
+michi-maintain retention
+
+# Apply after reviewing the preview.
+michi-maintain retention --apply --confirm DELETE-EXPIRED-OBSERVATIONS
+
+michi-maintain dead-letter status --kind outbox
+michi-maintain dead-letter retry --kind outbox --key 123
+michi-maintain dead-letter quarantine --kind outbox --key 123 `
+    --reason confirmed_poison_event
+michi-maintain dead-letter purge --kind outbox `
+    --confirm PURGE-QUARANTINED-WORK
+
+michi-maintain check
+michi-maintain rebuild --confirm REBUILD-DERIVED-STATE
+michi-maintain rebuild --region gh5:wh9hx `
+    --confirm REBUILD-DERIVED-STATE
+```
+
+Production mutations require the exact confirmation shown above. Retention
+deletes in bounded batches only when projection work completed and the event is
+not current contributor evidence. Before deletion, repeated historical evidence
+is folded into a compact rollup so a rebuild preserves the public hazard's
+original detection time. Pending and quarantined work is never removed by the
+retention command.
+
+The raw-observation default is 90 days and can be configured from 30 to 90
+days. Every mutation is recorded in `operations_audit_events` with a command
+ID, bounded action/result fields, and counts. See the
+[backup and recovery runbook](../../docs/operations/BACKUP_RESTORE.md) for RPO,
+RTO, isolated restore, and projection recovery procedures.
+
 ## Local development
 
 Requirements:
@@ -190,6 +228,9 @@ timeouts are configurable with:
 - `MICHI_REFRESH_RATE_LIMIT_PER_MINUTE`
 - `MICHI_INGESTION_RATE_LIMIT_PER_MINUTE`
 - `MICHI_PUBLIC_READ_RATE_LIMIT_PER_MINUTE`
+- `MICHI_OBSERVATION_RETENTION_DAYS`
+- `MICHI_MAINTENANCE_BATCH_SIZE`
+- `MICHI_DEAD_LETTER_QUARANTINE_DAYS`
 
 `MICHI_RATE_LIMIT_HASH_SECRET` must be a separately managed secret with at
 least 32 characters in staging/production. Do not commit secrets in `.env`

@@ -13,7 +13,7 @@ emergency mesh are explicitly deferred future work.
 | Path | Responsibility | Current state |
 |---|---|---|
 | `apps/android` | Native Kotlin/Jetpack Compose driver application | Architecture scaffold |
-| `services/api` | FastAPI ingestion and hazard projection services | Durable ingest plus idempotent projector |
+| `services/api` | FastAPI ingestion and hazard projection services | Durable, secured, rebuildable backend |
 | `firmware/roadsense` | ESP32 RoadSense accessory firmware | Safe no-network scaffold |
 | `hardware` | Electrical, mechanical, BOM, manufacturing and validation records | Documentation scaffold |
 | `contracts` | Versioned API, event and device protocol contracts | Initial observation and frame schemas |
@@ -49,6 +49,9 @@ The backend foundation exposes:
 - account-free anonymous installation credentials, replay-safe refresh
   rotation, authenticated contribution, trusted-proxy handling, and atomic
   abuse limits
+- guarded raw-observation retention, audited dead-letter operations,
+  deterministic full/regional rebuilds, consistency checks, and a real
+  isolated-database restore drill
 
 The endpoint returns `202` only after the database transaction commits.
 

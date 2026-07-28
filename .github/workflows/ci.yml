@@ -98,6 +98,14 @@ jobs:
       - run: ruff check .
       - run: mypy
       - run: pytest
+      - name: Verify isolated PostgreSQL backup restore
+        run: |
+          container_id="$(docker ps --filter ancestor=postgis/postgis:17-3.5 --format '{{.ID}}' | head -n 1)"
+          test -n "$container_id"
+          python ../../infra/scripts/verify_postgres_restore.py \
+            --database-url "$MICHI_TEST_DATABASE_URL" \
+            --container "$container_id" \
+            --maximum-seconds 300
 
   android:
     runs-on: ubuntu-latest
