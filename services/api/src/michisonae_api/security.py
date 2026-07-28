@@ -164,7 +164,7 @@ RATE_LIMIT_SQL = """
 WITH instant AS (
     SELECT clock_timestamp() AS now
 ),
-window AS (
+rate_window AS (
     SELECT
         now,
         to_timestamp(floor(extract(epoch FROM now) / %s) * %s) AS started_at
@@ -178,7 +178,7 @@ counted AS (
         request_count
     )
     SELECT %s, %s, started_at, 1
-    FROM window
+    FROM rate_window
     ON CONFLICT (scope, subject_hash, window_started_at) DO UPDATE
     SET request_count = security_rate_limits.request_count + 1
     RETURNING request_count, window_started_at
@@ -187,10 +187,14 @@ SELECT
     counted.request_count,
     GREATEST(
         1,
-        ceil(extract(epoch FROM counted.window_started_at + %s::interval - window.now))
+        ceil(
+            extract(
+                epoch FROM counted.window_started_at + %s::interval - rate_window.now
+            )
+        )
     )::integer AS retry_after
 FROM counted
-CROSS JOIN window
+CROSS JOIN rate_window
 """
 
 
