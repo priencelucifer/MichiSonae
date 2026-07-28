@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import (
@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 InstallationId = Annotated[str, StringConstraints(min_length=16, max_length=128)]
@@ -49,6 +50,26 @@ class ObservationBatch(BaseModel):
 
     schema_version: Literal["1.0"]
     observations: list[RoadObservation] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def event_ids_must_be_unique_within_batch(self) -> Self:
+        event_ids = [observation.event_id for observation in self.observations]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValueError("event_id values must be unique within a batch")
+        return self
+
+
+class ObservationBatchAccepted(BaseModel):
+    schema_version: Literal["1.0"] = "1.0"
+    received_count: int = Field(ge=1, le=100)
+    stored_count: int = Field(ge=0, le=100)
+    duplicate_count: int = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def counts_must_balance(self) -> Self:
+        if self.stored_count + self.duplicate_count != self.received_count:
+            raise ValueError("stored_count and duplicate_count must equal received_count")
+        return self
 
 
 class ApiError(BaseModel):
