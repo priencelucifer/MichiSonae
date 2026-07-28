@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from fakes import MemoryObservationStore
+from fakes import MemoryObservationStore, MemorySecurityService
 from fastapi.testclient import TestClient
 
 from michisonae_api.main import create_app
@@ -31,9 +31,14 @@ def valid_batch(*, event_id: str | None = None) -> dict[str, object]:
 
 
 def test_valid_batch_is_not_acknowledged_without_durable_storage() -> None:
-    client = TestClient(create_app(Settings(environment="test")))
+    security = MemorySecurityService()
+    client = TestClient(create_app(Settings(environment="test"), security_service=security))
 
-    response = client.post("/v1/observations:batch", json=valid_batch())
+    response = client.post(
+        "/v1/observations:batch",
+        json=valid_batch(),
+        headers={"Authorization": f"Bearer {security.access_token}"},
+    )
 
     assert response.status_code == 503
     assert response.json()["code"] == "durable_ingestion_unavailable"
@@ -44,16 +49,23 @@ def test_committed_batch_is_acknowledged_and_retry_is_idempotent() -> None:
     event_id = str(uuid4())
     payload = valid_batch(event_id=event_id)
     store = MemoryObservationStore()
+    security = MemorySecurityService()
     with TestClient(
-        create_app(Settings(environment="test"), observation_store=store),
+        create_app(
+            Settings(environment="test"),
+            observation_store=store,
+            security_service=security,
+        ),
     ) as client:
         first = client.post(
             "/v1/observations:batch",
             json=payload,
+            headers={"Authorization": f"Bearer {security.access_token}"},
         )
         retry = client.post(
             "/v1/observations:batch",
             json=payload,
+            headers={"Authorization": f"Bearer {security.access_token}"},
         )
 
     assert first.status_code == 202
@@ -71,17 +83,33 @@ def test_committed_batch_is_acknowledged_and_retry_is_idempotent() -> None:
 def test_reused_event_id_with_different_content_rejects_entire_batch() -> None:
     event_id = str(uuid4())
     store = MemoryObservationStore()
+    security = MemorySecurityService()
     with TestClient(
-        create_app(Settings(environment="test"), observation_store=store),
+        create_app(
+            Settings(environment="test"),
+            observation_store=store,
+            security_service=security,
+        ),
     ) as client:
         original = valid_batch(event_id=event_id)
-        assert client.post("/v1/observations:batch", json=original).status_code == 202
+        assert (
+            client.post(
+                "/v1/observations:batch",
+                json=original,
+                headers={"Authorization": f"Bearer {security.access_token}"},
+            ).status_code
+            == 202
+        )
 
         conflicting = valid_batch(event_id=event_id)
         observations = conflicting["observations"]
         assert isinstance(observations, list)
         observations[0]["severity"] = 0.1
-        response = client.post("/v1/observations:batch", json=conflicting)
+        response = client.post(
+            "/v1/observations:batch",
+            json=conflicting,
+            headers={"Authorization": f"Bearer {security.access_token}"},
+        )
 
     assert response.status_code == 409
     assert response.json()["code"] == "event_id_conflict"
@@ -89,10 +117,19 @@ def test_reused_event_id_with_different_content_rejects_entire_batch() -> None:
 
 def test_store_failure_is_never_acknowledged() -> None:
     store = MemoryObservationStore(fail_ingestion=True)
+    security = MemorySecurityService()
     with TestClient(
-        create_app(Settings(environment="test"), observation_store=store),
+        create_app(
+            Settings(environment="test"),
+            observation_store=store,
+            security_service=security,
+        ),
     ) as client:
-        response = client.post("/v1/observations:batch", json=valid_batch())
+        response = client.post(
+            "/v1/observations:batch",
+            json=valid_batch(),
+            headers={"Authorization": f"Bearer {security.access_token}"},
+        )
 
     assert response.status_code == 503
     assert response.json()["code"] == "durable_ingestion_unavailable"
@@ -105,24 +142,35 @@ def test_duplicate_event_ids_inside_one_batch_are_rejected() -> None:
     assert isinstance(observations, list)
     observations.append(dict(observations[0]))
 
+    security = MemorySecurityService()
     client = TestClient(
         create_app(
             Settings(environment="test"),
             observation_store=MemoryObservationStore(),
+            security_service=security,
         ),
     )
-    response = client.post("/v1/observations:batch", json=payload)
+    response = client.post(
+        "/v1/observations:batch",
+        json=payload,
+        headers={"Authorization": f"Bearer {security.access_token}"},
+    )
 
     assert response.status_code == 422
 
 
 def test_invalid_location_is_rejected_before_ingestion_guard() -> None:
-    client = TestClient(create_app(Settings(environment="test")))
+    security = MemorySecurityService()
+    client = TestClient(create_app(Settings(environment="test"), security_service=security))
     payload = valid_batch()
     observations = payload["observations"]
     assert isinstance(observations, list)
     observations[0]["latitude"] = 120.0
 
-    response = client.post("/v1/observations:batch", json=payload)
+    response = client.post(
+        "/v1/observations:batch",
+        json=payload,
+        headers={"Authorization": f"Bearer {security.access_token}"},
+    )
 
     assert response.status_code == 422

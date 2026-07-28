@@ -1,8 +1,11 @@
+import ipaddress
 from functools import lru_cache
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_RATE_LIMIT_HASH_SECRET = "local-development-rate-limit-key"
 
 
 class Settings(BaseSettings):
@@ -35,6 +38,31 @@ class Settings(BaseSettings):
         le=86_400,
     )
     snapshot_stale_after_seconds: int = Field(default=900, ge=30, le=86_400)
+    access_token_ttl_seconds: int = Field(default=3600, ge=60, le=3600)
+    refresh_token_ttl_seconds: int = Field(
+        default=2_592_000,
+        ge=3600,
+        le=7_776_000,
+    )
+    token_family_ttl_seconds: int = Field(
+        default=7_776_000,
+        ge=86_400,
+        le=31_536_000,
+    )
+    maximum_active_access_tokens: int = Field(default=5, ge=1, le=20)
+    observation_maximum_age_seconds: int = Field(
+        default=604_800,
+        ge=3600,
+        le=2_592_000,
+    )
+    observation_future_skew_seconds: int = Field(default=300, ge=0, le=3600)
+    maximum_request_bytes: int = Field(default=131_072, ge=4096, le=1_048_576)
+    trusted_proxy_cidrs: str = ""
+    rate_limit_hash_secret: str = DEFAULT_RATE_LIMIT_HASH_SECRET
+    registration_rate_limit_per_hour: int = Field(default=10, ge=1, le=1000)
+    refresh_rate_limit_per_minute: int = Field(default=30, ge=1, le=1000)
+    ingestion_rate_limit_per_minute: int = Field(default=120, ge=1, le=10_000)
+    public_read_rate_limit_per_minute: int = Field(default=300, ge=1, le=100_000)
 
     @model_validator(mode="after")
     def pool_maximum_must_cover_minimum(self) -> Self:
@@ -50,6 +78,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "snapshot_region_geohash_precision must be <= projection_geohash_precision"
             )
+        if self.environment in {"staging", "production"} and (
+            len(self.rate_limit_hash_secret) < 32
+            or self.rate_limit_hash_secret == DEFAULT_RATE_LIMIT_HASH_SECRET
+        ):
+            raise ValueError(
+                "rate_limit_hash_secret must have at least 32 characters outside local/test"
+            )
+        if self.token_family_ttl_seconds < self.refresh_token_ttl_seconds:
+            raise ValueError("token_family_ttl_seconds must be >= refresh_token_ttl_seconds")
+        try:
+            for item in self.trusted_proxy_cidrs.split(","):
+                if item.strip():
+                    ipaddress.ip_network(item.strip(), strict=True)
+        except ValueError as error:
+            raise ValueError("trusted_proxy_cidrs contains an invalid network") from error
         return self
 
 

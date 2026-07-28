@@ -16,6 +16,7 @@ from michisonae_api.projection import PostgresProjectionWorker, ProjectionRunRes
 from michisonae_api.settings import Settings
 
 DATABASE_URL = os.getenv("MICHI_TEST_DATABASE_URL")
+AUTHORIZATIONS: dict[str, tuple[str, str]] = {}
 pytestmark = pytest.mark.skipif(
     not DATABASE_URL,
     reason="MICHI_TEST_DATABASE_URL is required for PostgreSQL integration tests",
@@ -58,6 +59,12 @@ def reset_database() -> None:
         connection.execute(
             """
             TRUNCATE
+                public.security_audit_events,
+                public.security_rate_limits,
+                public.auth_access_tokens,
+                public.auth_refresh_tokens,
+                public.auth_token_families,
+                public.anonymous_installations,
                 public.regional_snapshot_heads,
                 public.regional_hazard_snapshots,
                 public.regional_snapshot_work,
@@ -70,6 +77,7 @@ def reset_database() -> None:
             RESTART IDENTITY
             """
         )
+    AUTHORIZATIONS.clear()
 
 
 def settings(**overrides: Any) -> Settings:
@@ -80,15 +88,38 @@ def settings(**overrides: Any) -> Settings:
         database_pool_min_size=1,
         database_pool_max_size=8,
         database_pool_timeout_seconds=5,
+        registration_rate_limit_per_hour=1000,
         **overrides,
     )
 
 
 def submit(*observations: dict[str, object]) -> None:
     with TestClient(create_app(settings())) as client:
-        response = client.post("/v1/observations:batch", json=batch(*observations))
-    assert response.status_code == 202
-    assert response.json()["stored_count"] == len(observations)
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in observations:
+            grouped.setdefault(str(row["installation_id"]), []).append(row)
+        for alias, rows in grouped.items():
+            if alias not in AUTHORIZATIONS:
+                registration = client.post(
+                    "/v1/installations:register",
+                    json={"schema_version": "1.0"},
+                )
+                assert registration.status_code == 201
+                body = registration.json()
+                AUTHORIZATIONS[alias] = (
+                    body["installation_id"],
+                    body["access_token"],
+                )
+            installation_id, access_token = AUTHORIZATIONS[alias]
+            for row in rows:
+                row["installation_id"] = installation_id
+            response = client.post(
+                "/v1/observations:batch",
+                json=batch(*rows),
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 202
+            assert response.json()["stored_count"] == len(rows)
 
 
 def run_once(worker_settings: Settings | None = None) -> ProjectionRunResult:

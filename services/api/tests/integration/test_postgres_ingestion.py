@@ -52,6 +52,12 @@ def reset_database() -> None:
         connection.execute(
             """
             TRUNCATE
+                public.security_audit_events,
+                public.security_rate_limits,
+                public.auth_access_tokens,
+                public.auth_refresh_tokens,
+                public.auth_token_families,
+                public.anonymous_installations,
                 public.regional_snapshot_heads,
                 public.regional_hazard_snapshots,
                 public.regional_snapshot_work,
@@ -91,13 +97,29 @@ def table_counts() -> tuple[int, int]:
     return int(observation_count[0]), int(outbox_count[0])
 
 
+def authorize(client: TestClient, payload: dict[str, object]) -> dict[str, str]:
+    registration = client.post(
+        "/v1/installations:register",
+        json={"schema_version": "1.0"},
+    )
+    assert registration.status_code == 201
+    body = registration.json()
+    observations = payload["observations"]
+    assert isinstance(observations, list)
+    for row in observations:
+        assert isinstance(row, dict)
+        row["installation_id"] = body["installation_id"]
+    return {"Authorization": f"Bearer {body['access_token']}"}
+
+
 def test_retry_produces_one_observation_and_one_outbox_event() -> None:
     event_id = str(uuid4())
     payload = batch(observation(event_id=event_id))
 
     with TestClient(create_app(settings())) as client:
-        first = client.post("/v1/observations:batch", json=payload)
-        retry = client.post("/v1/observations:batch", json=payload)
+        headers = authorize(client, payload)
+        first = client.post("/v1/observations:batch", json=payload, headers=headers)
+        retry = client.post("/v1/observations:batch", json=payload, headers=headers)
 
     assert first.status_code == 202
     assert first.json()["stored_count"] == 1
@@ -111,7 +133,8 @@ def test_maximum_batch_is_stored_and_queued_atomically() -> None:
     payload = batch(*(observation() for _ in range(100)))
 
     with TestClient(create_app(settings())) as client:
-        response = client.post("/v1/observations:batch", json=payload)
+        headers = authorize(client, payload)
+        response = client.post("/v1/observations:batch", json=payload, headers=headers)
 
     assert response.status_code == 202
     assert response.json()["stored_count"] == 100
@@ -122,10 +145,15 @@ def test_concurrent_retries_have_one_business_effect() -> None:
     payload = batch(observation())
 
     with TestClient(create_app(settings())) as client:
+        headers = authorize(client, payload)
         with ThreadPoolExecutor(max_workers=8) as executor:
             responses = list(
                 executor.map(
-                    lambda _: client.post("/v1/observations:batch", json=payload),
+                    lambda _: client.post(
+                        "/v1/observations:batch",
+                        json=payload,
+                        headers=headers,
+                    ),
                     range(32),
                 )
             )
@@ -140,16 +168,26 @@ def test_event_id_conflict_rolls_back_other_new_events() -> None:
     new_event_id = str(uuid4())
 
     with TestClient(create_app(settings())) as client:
+        original = batch(observation(event_id=reused_event_id))
+        headers = authorize(client, original)
         first = client.post(
             "/v1/observations:batch",
-            json=batch(observation(event_id=reused_event_id)),
+            json=original,
+            headers=headers,
         )
+        conflicting = batch(
+            observation(event_id=reused_event_id, severity=0.1),
+            observation(event_id=new_event_id),
+        )
+        observations = conflicting["observations"]
+        assert isinstance(observations, list)
+        for row in observations:
+            assert isinstance(row, dict)
+            row["installation_id"] = original["observations"][0]["installation_id"]
         conflict = client.post(
             "/v1/observations:batch",
-            json=batch(
-                observation(event_id=reused_event_id, severity=0.1),
-                observation(event_id=new_event_id),
-            ),
+            json=conflicting,
+            headers=headers,
         )
 
     assert first.status_code == 202
@@ -182,9 +220,12 @@ def test_outbox_insert_failure_rolls_back_observation() -> None:
 
     try:
         with TestClient(create_app(settings())) as client:
+            payload = batch(observation())
+            headers = authorize(client, payload)
             response = client.post(
                 "/v1/observations:batch",
-                json=batch(observation()),
+                json=payload,
+                headers=headers,
             )
     finally:
         with psycopg.connect(DATABASE_URL, autocommit=True) as connection:

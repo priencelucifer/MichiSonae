@@ -46,6 +46,9 @@ The backend foundation exposes:
   dead letters and deterministic rebuilds
 - content-addressed global regional snapshots and an ETag-enabled public read
   endpoint designed for CDN fan-out
+- account-free anonymous installation credentials, replay-safe refresh
+  rotation, authenticated contribution, trusted-proxy handling, and atomic
+  abuse limits
 
 The endpoint returns `202` only after the database transaction commits.
 

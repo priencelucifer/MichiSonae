@@ -1596,9 +1596,9 @@ Deliver:
 - observation idempotency — **implemented in backend v0.2**;
 - transactional outbox and idempotent projector — **implemented in backend v0.3**;
 - robust consumer recovery/dead-letter handling — **implemented in backend v0.3**;
-- concurrency-safe auth refresh and device/session limits;
-- atomic rate limits with correct proxy configuration and headers;
-- time/replay policy;
+- concurrency-safe auth refresh and device/session limits — **implemented in backend v0.5**;
+- atomic rate limits with correct proxy configuration and headers — **implemented in backend v0.5**;
+- time/replay policy — **implemented in backend v0.5**;
 - road-segment-aware projection schema;
 - retention partitions/jobs;
 - liveness/readiness separation;

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MichiSonae API
-  version: 0.4.0
+  version: 0.5.0
 paths:
   /health/live:
     get:
@@ -56,6 +56,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiError"
+        "401":
+          description: A valid installation access credential is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: An observation claimed a different installation identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "413":
+          description: Request body exceeds the configured size limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "415":
+          description: Request content type is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Installation or client-IP rate limit was exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
         "503":
           description: >-
             The batch was not accepted because the durable store or required
@@ -66,6 +96,98 @@ paths:
                 $ref: "#/components/schemas/ApiError"
         "422":
           description: Request validation failed.
+  /v1/installations:register:
+    post:
+      operationId: registerAnonymousInstallation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallationRegistration"
+      responses:
+        "201":
+          description: Opaque anonymous installation credentials were issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnonymousCredentials"
+        "413":
+          description: Request body exceeds the configured size limit.
+        "415":
+          description: Request content type is not application/json.
+        "429":
+          description: Registration rate limit was exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: Security storage is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "422":
+          description: Request validation failed.
+  /v1/auth:refresh:
+    post:
+      operationId: refreshAnonymousCredentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshCredentialRequest"
+      responses:
+        "200":
+          description: A rotated access and refresh credential pair.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnonymousCredentials"
+        "401":
+          description: Refresh credential is invalid, expired, or reused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "413":
+          description: Request body exceeds the configured size limit.
+        "415":
+          description: Request content type is not application/json.
+        "429":
+          description: Refresh rate limit was exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: Security storage is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "422":
+          description: Request validation failed.
+  /v1/installations/current:
+    delete:
+      operationId: revokeAnonymousInstallation
+      responses:
+        "204":
+          description: Installation credentials and token families were revoked.
+        "401":
+          description: A valid installation access credential is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: Security storage is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /v1/regions/{region_id}/hazards:
     get:
       operationId: getRegionalHazards
@@ -109,6 +231,12 @@ paths:
                 $ref: "#/components/schemas/ApiError"
         "404":
           description: The requested immutable version does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Client-IP origin rate limit was exceeded.
           content:
             application/json:
               schema:
@@ -181,6 +309,61 @@ components:
           type: integer
           minimum: 0
           maximum: 100
+    InstallationRegistration:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+      properties:
+        schema_version:
+          const: "1.0"
+        attestation:
+          anyOf:
+            - type: string
+              minLength: 16
+              maxLength: 2048
+            - type: "null"
+    RefreshCredentialRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - refresh_token
+      properties:
+        schema_version:
+          const: "1.0"
+        refresh_token:
+          type: string
+          minLength: 40
+          maxLength: 256
+    AnonymousCredentials:
+      type: object
+      additionalProperties: false
+      required:
+        - installation_id
+        - access_token
+        - access_expires_at
+        - refresh_token
+        - refresh_expires_at
+      properties:
+        schema_version:
+          const: "1.0"
+        installation_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        token_type:
+          const: Bearer
+        access_token:
+          type: string
+        access_expires_at:
+          type: string
+          format: date-time
+        refresh_token:
+          type: string
+        refresh_expires_at:
+          type: string
+          format: date-time
     HazardCoverage:
       type: object
       additionalProperties: false
