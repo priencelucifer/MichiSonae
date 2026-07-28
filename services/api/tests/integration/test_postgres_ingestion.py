@@ -52,6 +52,9 @@ def reset_database() -> None:
         connection.execute(
             """
             TRUNCATE
+                public.regional_snapshot_heads,
+                public.regional_hazard_snapshots,
+                public.regional_snapshot_work,
                 public.projection_processed_events,
                 public.hazard_projections,
                 public.hazard_contributors,
@@ -186,12 +189,9 @@ def test_outbox_insert_failure_rolls_back_observation() -> None:
     finally:
         with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
             connection.execute(
-                "DROP TRIGGER IF EXISTS fail_test_outbox_insert "
-                "ON public.observation_outbox"
+                "DROP TRIGGER IF EXISTS fail_test_outbox_insert ON public.observation_outbox"
             )
-            connection.execute(
-                "DROP FUNCTION IF EXISTS public.fail_test_outbox_insert()"
-            )
+            connection.execute("DROP FUNCTION IF EXISTS public.fail_test_outbox_insert()")
 
     assert response.status_code == 503
     assert table_counts() == (0, 0)

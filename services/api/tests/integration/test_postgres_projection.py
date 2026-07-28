@@ -58,6 +58,9 @@ def reset_database() -> None:
         connection.execute(
             """
             TRUNCATE
+                public.regional_snapshot_heads,
+                public.regional_hazard_snapshots,
+                public.regional_snapshot_work,
                 public.projection_processed_events,
                 public.hazard_projections,
                 public.hazard_contributors,
