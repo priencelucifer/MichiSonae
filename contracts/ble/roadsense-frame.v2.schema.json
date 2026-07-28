@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://michisonae.dev/contracts/ble/roadsense-frame.v2.schema.json",
+  "title": "RoadSense BLE logical frame v2",
+  "description": "Logical fields before binary encoding and authenticated transport.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "message_type",
+    "device_id",
+    "boot_id",
+    "sequence",
+    "monotonic_time_ms",
+    "payload"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": 2
+    },
+    "message_type": {
+      "enum": [
+        "capabilities",
+        "time_sync",
+        "road_detection",
+        "acknowledgement",
+        "device_health"
+      ]
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128
+    },
+    "boot_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "monotonic_time_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

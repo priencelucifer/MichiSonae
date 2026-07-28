@@ -1,0 +1,31 @@
+name: Feature slice
+description: Propose one measurable product or platform outcome.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What becomes true for the user or operator?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety, privacy and failure behavior
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation evidence
+    validations:
+      required: true

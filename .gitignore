@@ -1,0 +1,58 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+local.properties
+secrets.properties
+
+# Operating systems and IDEs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Android / Gradle
+.gradle/
+**/build/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# PlatformIO / embedded
+.pio/
+firmware/**/.pio/
+
+# Infrastructure
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Logs and local data
+*.log
+*.db
+*.sqlite
+*.sqlite3
+tmp/
+temp/
