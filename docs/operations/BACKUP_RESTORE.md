@@ -11,14 +11,16 @@
 
 ## Scheduled controls
 
-1. Enable encrypted daily managed backups with at least 14 retained restore
-   points for alpha.
+1. Enable encrypted daily managed backups with at least the environment's
+   declared retention (14 days for alpha).
 2. Enable point-in-time recovery and cross-zone storage before public beta.
 3. Record the provider backup job ID, start/end timestamps, size, checksum when
    available, and alert on a missed backup.
 4. Run the isolated restore drill in CI for every backend change.
 5. Run a provider-native staging restore monthly and after material database or
    provider changes.
+6. Alert when backup age exceeds 26 hours, PITR is disabled, storage is
+   unencrypted, or the restore drill misses the declared RTO.
 
 ## CI logical restore drill
 

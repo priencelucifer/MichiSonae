@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "michisonae-api"
-version = "0.7.0"
+version = "1.0.0"
 description = "MichiSonae road-observation API"
 requires-python = ">=3.12"
 dependencies = [

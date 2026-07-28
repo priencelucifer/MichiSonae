@@ -22,5 +22,114 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  migrate:
+    image: michisonae-backend:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment: &backend-environment
+      MICHI_ENVIRONMENT: local
+      MICHI_DATABASE_URL: postgresql://michisonae:michisonae@postgres:5432/michisonae
+      MICHI_RATE_LIMIT_HASH_SECRET: local-development-rate-limit-key
+      MICHI_DATABASE_POOL_MIN_SIZE: 1
+      MICHI_DATABASE_POOL_MAX_SIZE: 5
+      MICHI_REGISTRATION_RATE_LIMIT_PER_HOUR: 1000
+      MICHI_INGESTION_RATE_LIMIT_PER_MINUTE: 10000
+      MICHI_PUBLIC_READ_RATE_LIMIT_PER_MINUTE: 100000
+    command: ["michi-migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  api:
+    image: michisonae-backend:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment: *backend-environment
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  projection:
+    image: michisonae-backend:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment: *backend-environment
+    command: ["michi-project"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import urlopen;
+          urlopen('http://127.0.0.1:9101/health/ready', timeout=2).read()
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  snapshot:
+    image: michisonae-backend:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    environment: *backend-environment
+    command: ["michi-snapshot"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import urlopen;
+          urlopen('http://127.0.0.1:9102/health/ready', timeout=2).read()
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
 volumes:
   postgres-data:

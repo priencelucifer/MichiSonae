@@ -1,6 +1,7 @@
 import ipaddress
 from functools import lru_cache
-from typing import Literal, Self
+from pathlib import Path
+from typing import Any, Literal, Self
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
 
     environment: Literal["local", "test", "staging", "production"] = "local"
     database_url: str | None = None
+    database_url_file: str | None = None
     database_pool_min_size: int = Field(default=1, ge=0, le=20)
     database_pool_max_size: int = Field(default=10, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
@@ -59,6 +61,7 @@ class Settings(BaseSettings):
     maximum_request_bytes: int = Field(default=131_072, ge=4096, le=1_048_576)
     trusted_proxy_cidrs: str = ""
     rate_limit_hash_secret: str = DEFAULT_RATE_LIMIT_HASH_SECRET
+    rate_limit_hash_secret_file: str | None = None
     registration_rate_limit_per_hour: int = Field(default=10, ge=1, le=1000)
     refresh_rate_limit_per_minute: int = Field(default=30, ge=1, le=1000)
     ingestion_rate_limit_per_minute: int = Field(default=120, ge=1, le=10_000)
@@ -72,6 +75,30 @@ class Settings(BaseSettings):
     projection_health_port: int = Field(default=9101, ge=0, le=65_535)
     snapshot_health_port: int = Field(default=9102, ge=0, le=65_535)
     worker_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+
+    @model_validator(mode="before")
+    @classmethod
+    def load_file_backed_secrets(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        for value_name, file_name in (
+            ("database_url", "database_url_file"),
+            ("rate_limit_hash_secret", "rate_limit_hash_secret_file"),
+        ):
+            direct_value = values.get(value_name)
+            secret_file = values.get(file_name)
+            if direct_value and secret_file:
+                raise ValueError(f"{value_name} and {file_name} are mutually exclusive")
+            if not direct_value and secret_file:
+                try:
+                    secret_value = Path(str(secret_file)).read_text(encoding="utf-8").strip()
+                except OSError as error:
+                    raise ValueError(f"{file_name} is not readable") from error
+                if not secret_value:
+                    raise ValueError(f"{file_name} must not be empty")
+                values[value_name] = secret_value
+        return values
 
     @model_validator(mode="after")
     def pool_maximum_must_cover_minimum(self) -> Self:

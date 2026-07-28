@@ -1,10 +1,11 @@
 # MichiSonae Production Master Plan (RoadSense / Craterly)
 
-**Version:** 1.3
+**Version:** 1.4
 
 **Prepared:** 28 July 2026
 
-**Status:** Active implementation baseline
+**Status:** Backend v1 implementation complete; Android and hardware remain
+active future implementation
 **Scope:** `Roadsense`, `Roadsense_hardware`, `Roadsense_Application`, and `Craterly`
 
 ## 1. Executive decision
@@ -1608,6 +1609,11 @@ Deliver:
 - correlation propagation, redacted structured logs, bounded Prometheus
   metrics, API/worker lifecycle health, graceful shutdown, staging synthetic
   probes, and incident runbooks — **implemented in backend v0.7**;
+- immutable non-root/read-only packaging, isolated deployment roles,
+  file-backed secrets, least-privilege database policy, controlled
+  expand/migrate/canary/rollback, supply-chain gates, SBOM, alpha load tests,
+  backup/PITR requirements, and cost/scale inputs — **implemented in backend
+  v1.0**;
 - liveness/readiness separation;
 - public cacheable read contract and snapshot prototype — **implemented in backend v0.4**.
 
