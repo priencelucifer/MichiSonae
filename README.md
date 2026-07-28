@@ -13,11 +13,11 @@ emergency mesh are explicitly deferred future work.
 | Path | Responsibility | Current state |
 |---|---|---|
 | `apps/android` | Native Kotlin/Jetpack Compose driver application | Architecture scaffold |
-| `services/api` | FastAPI ingestion and hazard projection services | Durable, secured, rebuildable backend |
+| `services/api` | FastAPI ingestion and hazard projection services | Backend v1 complete |
 | `firmware/roadsense` | ESP32 RoadSense accessory firmware | Safe no-network scaffold |
 | `hardware` | Electrical, mechanical, BOM, manufacturing and validation records | Documentation scaffold |
 | `contracts` | Versioned API, event and device protocol contracts | Initial observation and frame schemas |
-| `infra` | Local, staging and production infrastructure definitions | Boundary scaffold |
+| `infra` | Local, staging and production infrastructure definitions | Deployable backend v1 contract |
 | `simulator` | Synthetic road/OBD/device test data | Boundary scaffold |
 | `docs` | Architecture, decisions, roadmap and master plan | Active |
 
@@ -55,6 +55,13 @@ The backend foundation exposes:
 - correlated redacted JSON logs, bounded Prometheus metrics, independent
   API/worker health states, graceful worker shutdown, staging probes, alerts,
   and incident runbooks
+- one immutable non-root/read-only image with isolated migration, API,
+  projection and snapshot roles, file-backed secrets and least-privilege
+  database grants
+- reproducible local Compose, provider-neutral staging/production templates,
+  controlled canary/rollback, backup/PITR requirements and budget/scale inputs
+- dependency, secret, IaC and critical-container scans, an SPDX SBOM, and a k6
+  alpha/commute-spike/duplicate-retry performance gate
 
 The endpoint returns `202` only after the database transaction commits.
 

@@ -1,0 +1,47 @@
+schema_version: "1.0"
+profiles:
+  invited_alpha:
+    invited_testers: 10
+    monthly_budget_usd: 10
+    budget_alert_percentages: [50, 80, 100]
+    api:
+      replicas: 1
+      cpu: 0.5
+      memory_mb: 384
+      max_concurrency_per_replica: 200
+      database_pool_max_per_replica: 5
+    projection:
+      replicas: 1
+      cpu: 0.5
+      memory_mb: 256
+      database_pool_max_per_replica: 5
+    snapshot:
+      replicas: 1
+      cpu: 0.25
+      memory_mb: 256
+      database_pool_max_per_replica: 5
+    database:
+      minimum_vcpu: 1
+      minimum_memory_mb: 1024
+      minimum_storage_gb: 20
+      connection_budget: 30
+      backup_retention_days: 14
+      pitr_window_days: 7
+  growth:
+    scaling_signals:
+      api:
+        scale_out_when:
+          - "p95 HTTP latency exceeds 500 ms for 10 minutes"
+          - "CPU exceeds 70 percent for 10 minutes"
+        scale_in_when:
+          - "p95 HTTP latency is below 250 ms and CPU below 35 percent for 30 minutes"
+      projection:
+        scale_out_when:
+          - "oldest pending observation exceeds 60 seconds for 5 minutes"
+      snapshot:
+        scale_out_when:
+          - "oldest pending snapshot exceeds 120 seconds for 5 minutes"
+    invariants:
+      - "sum(replicas multiplied by pool maximum) stays below the database connection budget"
+      - "one controlled migration job runs before canary traffic"
+      - "CDN absorbs public regional reads before API replicas are increased"

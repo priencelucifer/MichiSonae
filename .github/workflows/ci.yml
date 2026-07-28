@@ -91,7 +91,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: services/api/pyproject.toml
+          cache-dependency-path: |
+            services/api/pyproject.toml
+            services/api/requirements.lock
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
       - name: Validate operational configuration
@@ -100,14 +102,36 @@ jobs:
           from pathlib import Path
           import yaml
 
-          path = Path("../../infra/observability/prometheus-alerts.yml")
-          document = yaml.safe_load(path.read_text(encoding="utf-8"))
-          assert document["groups"][0]["rules"]
+          paths = (
+              Path("../../infra/observability/prometheus-alerts.yml"),
+              Path("../../infra/sizing/capacity.yaml"),
+              Path("../../infra/deploy/compose.yaml"),
+          )
+          for path in paths:
+              document = yaml.safe_load(path.read_text(encoding="utf-8"))
+              assert document
           PY
+          python ../../infra/scripts/validate_deployment.py \
+            ../../infra/staging/.env.example --template
+          python ../../infra/scripts/validate_deployment.py \
+            ../../infra/production/.env.example --template
       - run: python -m michisonae_api.migrate
+      - name: Verify least-privilege database role policy
+        run: |
+          container_id="$(docker ps --filter ancestor=postgis/postgis:17-3.5 --format '{{.ID}}' | head -n 1)"
+          test -n "$container_id"
+          docker exec -i "$container_id" \
+            psql -v ON_ERROR_STOP=1 -U michisonae -d michisonae_test \
+            < ../../infra/database/least-privilege-roles.sql
+          docker exec "$container_id" \
+            psql -v ON_ERROR_STOP=1 -U michisonae -d michisonae_test \
+            -Atc "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'michi_%'" \
+            | grep -qx "5"
       - run: ruff check .
       - run: mypy
       - run: pytest
+      - name: Verify deterministic projection rebuild
+        run: michi-maintain rebuild
       - name: Verify isolated PostgreSQL backup restore
         run: |
           container_id="$(docker ps --filter ancestor=postgis/postgis:17-3.5 --format '{{.ID}}' | head -n 1)"
@@ -116,6 +140,152 @@ jobs:
             --database-url "$MICHI_TEST_DATABASE_URL" \
             --container "$container_id" \
             --maximum-seconds 300
+
+  backend-supply-chain:
+    runs-on: ubuntu-latest
+    needs:
+      - backend
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/api/pyproject.toml
+      - name: Audit Python production dependencies
+        run: |
+          python -m pip install pip-audit==2.10.1
+          python -m pip_audit \
+            --requirement services/api/requirements.lock \
+            --no-deps \
+            --progress-spinner=off
+      - name: Reject committed secrets and critical IaC misconfiguration
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+      - name: Build immutable backend artifact
+        run: |
+          docker build --pull \
+            --build-arg "VCS_REF=${GITHUB_SHA}" \
+            --build-arg "IMAGE_VERSION=1.0.0" \
+            --tag "michisonae-backend:${GITHUB_SHA}" .
+      - name: Verify non-root read-only runtime and liveness
+        run: |
+          test "$(docker image inspect "michisonae-backend:${GITHUB_SHA}" --format '{{.Config.User}}')" = "10001:10001"
+          container_id="$(docker run --detach --rm \
+            --read-only \
+            --tmpfs /tmp:size=16m,mode=1777 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --env MICHI_ENVIRONMENT=test \
+            --publish 127.0.0.1:18000:8000 \
+            "michisonae-backend:${GITHUB_SHA}")"
+          trap 'docker stop "$container_id" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18000/health/live \
+              | grep -q '"version":"1.0.0"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container_id"
+          exit 1
+      - name: Reject actionable critical image vulnerabilities
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: michisonae-backend:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+      - name: Generate SPDX JSON SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: michisonae-backend:${{ github.sha }}
+          artifact-name: michisonae-backend-${{ github.sha }}.spdx.json
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact-retention: 30
+
+  backend-load:
+    runs-on: ubuntu-latest
+    needs:
+      - backend
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: michisonae_load
+          POSTGRES_USER: michisonae
+          POSTGRES_PASSWORD: michisonae
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U michisonae -d michisonae_load"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      MICHI_ENVIRONMENT: test
+      MICHI_DATABASE_URL: postgresql://michisonae:michisonae@localhost:5432/michisonae_load
+      MICHI_REGISTRATION_RATE_LIMIT_PER_HOUR: 1000
+      MICHI_INGESTION_RATE_LIMIT_PER_MINUTE: 10000
+      MICHI_PUBLIC_READ_RATE_LIMIT_PER_MINUTE: 100000
+      MICHI_PROJECTION_POLL_SECONDS: 0.1
+      MICHI_SNAPSHOT_POLL_SECONDS: 0.1
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/api/pyproject.toml
+      - run: python -m pip install services/api
+      - run: michi-migrate
+      - name: Start API and background workers
+        run: |
+          mkdir -p load-results
+          uvicorn michisonae_api.main:app \
+            --host 127.0.0.1 --port 8000 --no-access-log \
+            > load-results/api.log 2>&1 &
+          echo "$!" > load-results/api.pid
+          michi-project > load-results/projection.log 2>&1 &
+          echo "$!" > load-results/projection.pid
+          michi-snapshot > load-results/snapshot.log 2>&1 &
+          echo "$!" > load-results/snapshot.pid
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat load-results/api.log
+          exit 1
+      - name: Run invited-alpha and commute-spike gate
+        run: |
+          docker run --rm --network host \
+            --env BASE_URL=http://127.0.0.1:8000 \
+            --volume "$GITHUB_WORKSPACE/infra/load:/scripts:ro" \
+            --volume "$GITHUB_WORKSPACE/load-results:/results" \
+            grafana/k6:2.0.0 run /scripts/backend.js
+      - name: Upload load metrics and service logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: backend-load-${{ github.sha }}
+          path: load-results
+          if-no-files-found: error
+          retention-days: 30
 
   android:
     runs-on: ubuntu-latest

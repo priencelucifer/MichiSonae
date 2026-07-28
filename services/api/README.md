@@ -191,6 +191,21 @@ It is rejected in production and never uploads a route or trip sequence. See
 the [observability guide](../../docs/operations/OBSERVABILITY.md) and
 [incident runbooks](../../docs/operations/INCIDENTS.md).
 
+## Deployment artifact
+
+The repository-root `Dockerfile` packages API v1.0.0 once for four explicit
+roles: `michi-migrate`, the Uvicorn API, `michi-project`, and
+`michi-snapshot`. The runtime user is UID/GID 10001 and the deployment contract
+adds a read-only filesystem, bounded `/tmp`, dropped capabilities, and
+file-mounted PostgreSQL/rate-limit secrets.
+
+Staging and production must use an immutable `image@sha256` reference.
+Migrations are a one-shot release job and are never part of API startup.
+Database principals are separated by role using
+`infra/database/least-privilege-roles.sql`. See the
+[release runbook](../../docs/operations/RELEASE.md) and
+[load gate](../../docs/operations/LOAD_TESTING.md).
+
 ## Local development
 
 Requirements:
@@ -229,6 +244,7 @@ timeouts are configurable with:
 
 - `MICHI_DATABASE_POOL_MIN_SIZE`
 - `MICHI_DATABASE_POOL_MAX_SIZE`
+- `MICHI_DATABASE_URL_FILE`
 - `MICHI_DATABASE_POOL_TIMEOUT_SECONDS`
 - `MICHI_DATABASE_CONNECT_TIMEOUT_SECONDS`
 - `MICHI_PROJECTION_BATCH_SIZE`
@@ -257,6 +273,7 @@ timeouts are configurable with:
 - `MICHI_MAXIMUM_REQUEST_BYTES`
 - `MICHI_TRUSTED_PROXY_CIDRS`
 - `MICHI_RATE_LIMIT_HASH_SECRET`
+- `MICHI_RATE_LIMIT_HASH_SECRET_FILE`
 - `MICHI_REGISTRATION_RATE_LIMIT_PER_HOUR`
 - `MICHI_REFRESH_RATE_LIMIT_PER_MINUTE`
 - `MICHI_INGESTION_RATE_LIMIT_PER_MINUTE`

@@ -3,24 +3,25 @@
 The local environment runs PostgreSQL 17 with PostGIS 3.5, matching the
 recommended stable PostGIS image line for PostgreSQL 17.
 
-From the repository root:
+From the repository root, start the complete backend:
 
 ```powershell
-docker compose -f infra/local/compose.yaml up -d postgres
+docker compose -f infra/local/compose.yaml up --build -d
 docker compose -f infra/local/compose.yaml ps
 ```
 
-The development-only connection URL is:
+Compose runs one controlled migration job, then the non-root/read-only API,
+projection worker, and snapshot worker. The API is available at
+`http://127.0.0.1:8000`. The development-only database connection URL is:
 
 ```text
 postgresql://michisonae:michisonae@localhost:5432/michisonae
 ```
 
-Apply schema changes explicitly; the API does not migrate on startup:
+To apply a new schema change explicitly after the stack already exists:
 
 ```powershell
-$env:MICHI_DATABASE_URL = "postgresql://michisonae:michisonae@localhost:5432/michisonae"
-services\api\.venv\Scripts\python -m michisonae_api.migrate
+docker compose -f infra/local/compose.yaml run --rm migrate
 ```
 
 Stop the container without removing its data:
