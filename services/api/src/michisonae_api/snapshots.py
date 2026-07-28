@@ -72,8 +72,11 @@ SELECT
     updated_at
 FROM public.hazard_projections
 WHERE lifecycle_state IN ('provisional', 'confirmed')
-  AND location && ST_GeomFromGeoHash(%s)::geography
-  AND ST_Covers(ST_GeomFromGeoHash(%s), location::geometry)
+  AND location && ST_SetSRID(ST_GeomFromGeoHash(%s), 4326)::geography
+  AND ST_Covers(
+      ST_SetSRID(ST_GeomFromGeoHash(%s), 4326),
+      location::geometry
+  )
 ORDER BY cluster_key
 """
 

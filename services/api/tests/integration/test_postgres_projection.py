@@ -214,7 +214,7 @@ def test_concurrent_workers_do_not_lose_same_cluster_updates() -> None:
         )
         await asyncio.gather(*(worker.open() for worker in workers))
         try:
-            first, second = await asyncio.gather(*(worker.run_once() for worker in workers))
+            first, second = await asyncio.gather(*(worker.drain() for worker in workers))
             return first, second
         finally:
             await asyncio.gather(*(worker.close() for worker in workers))
