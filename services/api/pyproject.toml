@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "michisonae-api"
-version = "0.2.0"
+version = "0.3.0"
 description = "MichiSonae road-observation API"
 requires-python = ">=3.12"
 dependencies = [
@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 michi-migrate = "michisonae_api.migrate:main"
+michi-project = "michisonae_api.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/michisonae_api"]

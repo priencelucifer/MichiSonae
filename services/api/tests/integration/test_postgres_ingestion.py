@@ -50,8 +50,16 @@ def reset_database() -> None:
     run_migrations(DATABASE_URL)
     with psycopg.connect(DATABASE_URL, autocommit=True) as connection:
         connection.execute(
-            "TRUNCATE public.observation_outbox, public.road_observations "
-            "RESTART IDENTITY"
+            """
+            TRUNCATE
+                public.projection_processed_events,
+                public.hazard_projections,
+                public.hazard_contributors,
+                public.hazard_clusters,
+                public.observation_outbox,
+                public.road_observations
+            RESTART IDENTITY
+            """
         )
 
 

@@ -29,6 +29,40 @@ python -m michisonae_api.migrate
 `GET /health/live` checks only the process. `GET /health/ready` obtains a
 database connection and verifies the checksum of the latest required migration.
 
+## Hazard projection worker
+
+`michi-project` leases committed outbox rows with PostgreSQL
+`FOR UPDATE SKIP LOCKED`. It then updates the hazard projection and marks the
+outbox row complete in one transaction. Processing is safe to retry:
+`projection_processed_events` gives each observation one business effect.
+Expired leases are recoverable, retries use bounded exponential backoff, and a
+poison event moves to the dead-letter state after the configured attempt limit.
+
+Consensus uses distinct anonymous installations, not packet count:
+
+- one contributor is `community_unverified`;
+- two contributors are `provisional`;
+- three or more contributors are `confirmed`;
+- severity is the median of each contributor's latest observation.
+
+Clusters are currently deterministic geohash cells with `match_state=unmatched`.
+They must not be described as road-matched. Map matching can later populate a
+road segment without changing the ingestion or replay contract.
+
+Run one batch, continuously consume, inspect status, or rebuild all derived
+state from retained observations:
+
+```powershell
+.\.venv\Scripts\michi-project --once
+.\.venv\Scripts\michi-project
+.\.venv\Scripts\michi-project --status
+.\.venv\Scripts\michi-project --rebuild
+```
+
+Rebuild takes an exclusive PostgreSQL advisory lock, clears only derived
+projection tables, resets outbox delivery state, and drains retained source
+observations. It does not delete accepted observations.
+
 ## Local development
 
 Requirements:
@@ -69,5 +103,12 @@ timeouts are configurable with:
 - `MICHI_DATABASE_POOL_MAX_SIZE`
 - `MICHI_DATABASE_POOL_TIMEOUT_SECONDS`
 - `MICHI_DATABASE_CONNECT_TIMEOUT_SECONDS`
+- `MICHI_PROJECTION_BATCH_SIZE`
+- `MICHI_PROJECTION_LEASE_SECONDS`
+- `MICHI_PROJECTION_MAX_ATTEMPTS`
+- `MICHI_PROJECTION_RETRY_BASE_SECONDS`
+- `MICHI_PROJECTION_RETRY_MAX_SECONDS`
+- `MICHI_PROJECTION_POLL_SECONDS`
+- `MICHI_PROJECTION_GEOHASH_PRECISION`
 
 Do not commit secrets in `.env` files.

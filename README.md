@@ -13,7 +13,7 @@ emergency mesh are explicitly deferred future work.
 | Path | Responsibility | Current state |
 |---|---|---|
 | `apps/android` | Native Kotlin/Jetpack Compose driver application | Architecture scaffold |
-| `services/api` | FastAPI public API and durable ingestion boundary | PostgreSQL transaction/outbox ingestion |
+| `services/api` | FastAPI ingestion and hazard projection services | Durable ingest plus idempotent projector |
 | `firmware/roadsense` | ESP32 RoadSense accessory firmware | Safe no-network scaffold |
 | `hardware` | Electrical, mechanical, BOM, manufacturing and validation records | Documentation scaffold |
 | `contracts` | Versioned API, event and device protocol contracts | Initial observation and frame schemas |
@@ -42,6 +42,8 @@ The backend foundation exposes:
 - `GET /health/ready`
 - `POST /v1/observations:batch` with atomic PostgreSQL/PostGIS storage,
   `event_id` idempotency and a transactional outbox
+- a leased, retry-safe projection worker with distinct-installation consensus,
+  dead letters and deterministic rebuilds
 
 The endpoint returns `202` only after the database transaction commits.
 

@@ -14,11 +14,22 @@ class Settings(BaseSettings):
     database_pool_max_size: int = Field(default=10, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     database_connect_timeout_seconds: int = Field(default=5, ge=1, le=30)
+    projection_batch_size: int = Field(default=25, ge=1, le=100)
+    projection_lease_seconds: int = Field(default=60, ge=5, le=600)
+    projection_max_attempts: int = Field(default=5, ge=1, le=20)
+    projection_retry_base_seconds: float = Field(default=2.0, ge=0, le=60)
+    projection_retry_max_seconds: float = Field(default=300.0, ge=0, le=3600)
+    projection_poll_seconds: float = Field(default=1.0, ge=0.05, le=30)
+    projection_geohash_precision: int = Field(default=8, ge=5, le=12)
 
     @model_validator(mode="after")
     def pool_maximum_must_cover_minimum(self) -> Self:
         if self.database_pool_max_size < self.database_pool_min_size:
             raise ValueError("database_pool_max_size must be >= database_pool_min_size")
+        if self.projection_retry_max_seconds < self.projection_retry_base_seconds:
+            raise ValueError(
+                "projection_retry_max_seconds must be >= projection_retry_base_seconds"
+            )
         return self
 
 
