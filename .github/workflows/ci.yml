@@ -31,6 +31,10 @@ jobs:
           test -d infra
           test -d simulator
           test -f docs/MASTER_PLAN.md
+          test -x apps/android/gradlew
+          test -f apps/android/gradlew.bat
+          test -f apps/android/gradle/wrapper/gradle-wrapper.jar
+          test -f apps/android/gradle/wrapper/gradle-wrapper.properties
       - name: Parse JSON contracts
         run: |
           python - <<'PY'
@@ -79,6 +83,7 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/android
@@ -92,9 +97,15 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v6
+      - name: Verify wrapper and build debug APK
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug --stacktrace
+      - name: Upload owner debug APK
+        uses: actions/upload-artifact@v7
         with:
-          gradle-version: "9.5.0"
-      - run: gradle testDebugUnitTest lintDebug assembleDebug --stacktrace
+          name: michisonae-debug-${{ github.sha }}
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
 
   firmware:
     runs-on: ubuntu-latest

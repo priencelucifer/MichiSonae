@@ -27,13 +27,40 @@ Requirements:
 
 - JDK 17
 - Android SDK platform 36
-- Gradle 9.5
+- Android SDK build tools 36.0.0
 
-From this directory:
+The repository owns a Gradle 9.5.1 wrapper. Do not use a separately installed
+Gradle version. From this directory, run:
 
-```text
-gradle testDebugUnitTest lintDebug assembleDebug
+```shell
+./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-A checked-in Gradle wrapper is the first Android setup issue. CI provisions the
-same Gradle version until the wrapper is committed.
+On Windows PowerShell:
+
+```powershell
+.\gradlew.bat testDebugUnitTest lintDebug assembleDebug
+```
+
+The wrapper verifies the downloaded Gradle distribution with the SHA-256 value
+published for Gradle 9.5.1. GitHub CI also validates the committed wrapper JAR.
+
+## Owner debug APK
+
+A successful Android CI job uploads `michisonae-debug-<commit>` as a build
+artifact. Download and unzip it, then install the APK from Android Studio or
+with Android Debug Bridge:
+
+```powershell
+adb install -r app-debug.apk
+```
+
+The APK is a development build signed with an automatically generated debug
+key. It is suitable only for owner/alpha testing. If a later build was signed
+by a different debug key, uninstall the existing app before installing it.
+
+Local builds are written to:
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
