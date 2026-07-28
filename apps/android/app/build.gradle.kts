@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "io.github.priencelucifer.michisonae"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "io.github.priencelucifer.michisonae"

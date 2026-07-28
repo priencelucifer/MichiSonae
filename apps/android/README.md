@@ -26,7 +26,7 @@ the first vertical slice is implemented; do not create empty Gradle modules.
 Requirements:
 
 - JDK 17
-- Android SDK platform 37
+- Android SDK platform 36
 - Gradle 9.5
 
 From this directory:
