@@ -6,7 +6,10 @@ from importlib import resources
 
 import psycopg
 
-MIGRATION_FILES = ("0001_durable_observation_ingestion.sql",)
+MIGRATION_FILES = (
+    "0001_durable_observation_ingestion.sql",
+    "0002_hazard_projection_worker.sql",
+)
 MIGRATION_LOCK_ID = 4_885_343_490_975_695_649
 
 
