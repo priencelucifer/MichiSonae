@@ -268,7 +268,9 @@ SET generation = regional_snapshot_work.generation + 1,
     END,
     last_error = NULL,
     dead_lettered_at = NULL,
-    dead_letter_reason = NULL
+    dead_letter_reason = NULL,
+    quarantined_at = NULL,
+    quarantine_reason = NULL
 """
 
 RECORD_FAILURE_SQL = """
@@ -320,10 +322,58 @@ FROM public.observation_outbox
 
 RESET_PROJECTIONS_SQL = """
 TRUNCATE
+    public.regional_snapshot_heads,
+    public.regional_hazard_snapshots,
+    public.regional_snapshot_work,
     public.projection_processed_events,
     public.hazard_projections,
     public.hazard_contributors,
     public.hazard_clusters
+"""
+
+DELETE_REGION_PROCESSED_SQL = """
+DELETE FROM public.projection_processed_events AS processed
+USING public.hazard_clusters AS cluster
+WHERE processed.cluster_key = cluster.cluster_key
+  AND left(cluster.spatial_cell, %s) = %s
+"""
+
+DELETE_REGION_CLUSTERS_SQL = """
+DELETE FROM public.hazard_clusters
+WHERE left(spatial_cell, %s) = %s
+"""
+
+RESET_REGION_OUTBOX_SQL = """
+UPDATE public.observation_outbox AS outbox
+SET published_at = NULL,
+    delivery_attempts = 0,
+    next_attempt_at = clock_timestamp(),
+    last_error = NULL,
+    claimed_by = NULL,
+    claimed_until = NULL,
+    last_attempt_at = NULL,
+    dead_lettered_at = NULL,
+    dead_letter_reason = NULL,
+    quarantined_at = NULL,
+    quarantine_reason = NULL
+FROM public.road_observations AS observation
+WHERE observation.event_id = outbox.observation_event_id
+  AND ST_GeoHash(observation.location::geometry, %s) = %s
+"""
+
+DELETE_REGION_SNAPSHOT_HEAD_SQL = """
+DELETE FROM public.regional_snapshot_heads
+WHERE region_id = %s
+"""
+
+DELETE_REGION_SNAPSHOTS_SQL = """
+DELETE FROM public.regional_hazard_snapshots
+WHERE region_id = %s
+"""
+
+DELETE_REGION_SNAPSHOT_WORK_SQL = """
+DELETE FROM public.regional_snapshot_work
+WHERE region_id = %s
 """
 
 RESET_OUTBOX_SQL = """
@@ -336,7 +386,78 @@ SET published_at = NULL,
     claimed_until = NULL,
     last_attempt_at = NULL,
     dead_lettered_at = NULL,
-    dead_letter_reason = NULL
+    dead_letter_reason = NULL,
+    quarantined_at = NULL,
+    quarantine_reason = NULL
+"""
+
+APPLY_RETAINED_CONTRIBUTORS_SQL = """
+WITH retained_counts AS (
+    SELECT
+        processed.cluster_key,
+        observation.installation_id,
+        count(*)::bigint AS observation_count
+    FROM public.projection_processed_events AS processed
+    JOIN public.road_observations AS observation
+      ON observation.event_id = processed.event_id
+    GROUP BY processed.cluster_key, observation.installation_id
+)
+UPDATE public.hazard_contributors AS contributor
+SET first_detected_at = LEAST(
+        contributor.first_detected_at,
+        rollup.first_detected_at
+    ),
+    observation_count = (
+        retained_counts.observation_count
+        + rollup.observation_count
+    ),
+    updated_at = CASE
+        WHEN contributor.first_detected_at > rollup.first_detected_at
+          OR contributor.observation_count <> (
+              retained_counts.observation_count + rollup.observation_count
+          )
+        THEN clock_timestamp()
+        ELSE contributor.updated_at
+    END
+FROM public.retained_contributor_rollups AS rollup
+JOIN retained_counts
+  ON retained_counts.cluster_key = rollup.cluster_key
+ AND retained_counts.installation_id = rollup.installation_id
+JOIN public.hazard_clusters AS cluster
+  ON cluster.cluster_key = rollup.cluster_key
+WHERE contributor.cluster_key = rollup.cluster_key
+  AND contributor.installation_id = rollup.installation_id
+  AND (
+      %s::text IS NULL
+      OR left(cluster.spatial_cell, char_length(%s::text)) = %s::text
+  )
+RETURNING contributor.cluster_key
+"""
+
+REFRESH_RETAINED_PROJECTIONS_SQL = """
+WITH aggregates AS (
+    SELECT
+        contributor.cluster_key,
+        min(contributor.first_detected_at) AS first_detected_at,
+        sum(contributor.observation_count)::bigint AS revision
+    FROM public.hazard_contributors AS contributor
+    JOIN public.hazard_clusters AS cluster
+      ON cluster.cluster_key = contributor.cluster_key
+    WHERE %s::text IS NULL
+       OR left(cluster.spatial_cell, char_length(%s::text)) = %s::text
+    GROUP BY contributor.cluster_key
+)
+UPDATE public.hazard_projections AS projection
+SET first_detected_at = aggregates.first_detected_at,
+    revision = aggregates.revision,
+    updated_at = CASE
+        WHEN projection.first_detected_at <> aggregates.first_detected_at
+          OR projection.revision <> aggregates.revision
+        THEN clock_timestamp()
+        ELSE projection.updated_at
+    END
+FROM aggregates
+WHERE projection.cluster_key = aggregates.cluster_key
 """
 
 
@@ -485,6 +606,75 @@ class PostgresProjectionWorker:
         except PsycopgError as error:
             raise ProjectionUnavailable("projection rebuild reset failed") from error
         return RebuildResult(reset_count=reset_count)
+
+    async def rebuild_region(
+        self,
+        *,
+        region_id: str,
+        region_cell: str,
+    ) -> RebuildResult:
+        precision = len(region_cell)
+        try:
+            async with self._pool.connection(
+                timeout=self._settings.database_pool_timeout_seconds
+            ) as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (PROJECTION_REBUILD_LOCK_ID,),
+                    )
+                    await connection.execute(
+                        DELETE_REGION_SNAPSHOT_HEAD_SQL,
+                        (region_id,),
+                    )
+                    await connection.execute(
+                        DELETE_REGION_SNAPSHOTS_SQL,
+                        (region_id,),
+                    )
+                    await connection.execute(
+                        DELETE_REGION_SNAPSHOT_WORK_SQL,
+                        (region_id,),
+                    )
+                    await connection.execute(
+                        DELETE_REGION_PROCESSED_SQL,
+                        (precision, region_cell),
+                    )
+                    await connection.execute(
+                        DELETE_REGION_CLUSTERS_SQL,
+                        (precision, region_cell),
+                    )
+                    cursor = await connection.execute(
+                        RESET_REGION_OUTBOX_SQL,
+                        (precision, region_cell),
+                    )
+                    reset_count = cursor.rowcount
+        except PsycopgError as error:
+            raise ProjectionUnavailable("regional projection rebuild failed") from error
+        return RebuildResult(reset_count=reset_count)
+
+    async def apply_retained_rollups(self, region_cell: str | None = None) -> int:
+        parameters = (region_cell, region_cell, region_cell)
+        try:
+            async with self._pool.connection(
+                timeout=self._settings.database_pool_timeout_seconds
+            ) as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        "SELECT pg_advisory_xact_lock(%s)",
+                        (PROJECTION_REBUILD_LOCK_ID,),
+                    )
+                    contributor_cursor = await connection.execute(
+                        APPLY_RETAINED_CONTRIBUTORS_SQL,
+                        parameters,
+                    )
+                    applied_count = int(contributor_cursor.rowcount)
+                    await connection.execute(
+                        REFRESH_RETAINED_PROJECTIONS_SQL,
+                        parameters,
+                    )
+        except PsycopgError as error:
+            raise ProjectionUnavailable("retained contributor rollup failed") from error
+        return applied_count
 
     async def drain(self) -> ProjectionRunResult:
         total = ProjectionRunResult(0, 0, 0, 0, 0)

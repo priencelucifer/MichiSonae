@@ -1,10 +1,10 @@
 # MichiSonae Production Master Plan (RoadSense / Craterly)
 
-**Version:** 1.1
+**Version:** 1.2
 
 **Prepared:** 28 July 2026
 
-**Status:** Proposed implementation baseline
+**Status:** Active implementation baseline
 **Scope:** `Roadsense`, `Roadsense_hardware`, `Roadsense_Application`, and `Craterly`
 
 ## 1. Executive decision
@@ -1600,7 +1600,11 @@ Deliver:
 - atomic rate limits with correct proxy configuration and headers — **implemented in backend v0.5**;
 - time/replay policy — **implemented in backend v0.5**;
 - road-segment-aware projection schema;
-- retention partitions/jobs;
+- guarded 30–90 day raw-observation retention, compact retained contributor
+  rollups, audited dead-letter quarantine/purge, consistency checks, and
+  deterministic full/regional rebuilds — **implemented in backend v0.6**;
+- isolated PostgreSQL logical dump/restore drill with migration, count,
+  consistency, and RTO verification — **implemented in backend v0.6**;
 - liveness/readiness separation;
 - public cacheable read contract and snapshot prototype — **implemented in backend v0.4**.
 

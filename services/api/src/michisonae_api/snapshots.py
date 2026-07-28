@@ -185,7 +185,9 @@ SET generation = regional_snapshot_work.generation + 1,
     END,
     last_error = NULL,
     dead_lettered_at = NULL,
-    dead_letter_reason = NULL
+    dead_letter_reason = NULL,
+    quarantined_at = NULL,
+    quarantine_reason = NULL
 """
 
 LOAD_CURRENT_SNAPSHOT_SQL = """

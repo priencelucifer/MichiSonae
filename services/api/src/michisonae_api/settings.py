@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     refresh_rate_limit_per_minute: int = Field(default=30, ge=1, le=1000)
     ingestion_rate_limit_per_minute: int = Field(default=120, ge=1, le=10_000)
     public_read_rate_limit_per_minute: int = Field(default=300, ge=1, le=100_000)
+    observation_retention_days: int = Field(default=90, ge=30, le=90)
+    maintenance_batch_size: int = Field(default=500, ge=1, le=5000)
+    dead_letter_quarantine_days: int = Field(default=7, ge=1, le=90)
 
     @model_validator(mode="after")
     def pool_maximum_must_cover_minimum(self) -> Self:
