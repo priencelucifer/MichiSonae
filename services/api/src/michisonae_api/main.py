@@ -1,19 +1,33 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from michisonae_api import __version__
 from michisonae_api.models import (
+    AnonymousCredentials,
     ApiError,
+    InstallationRegistration,
     ObservationBatch,
     ObservationBatchAccepted,
+    RefreshCredentialRequest,
     RegionalHazardSnapshot,
+)
+from michisonae_api.security import (
+    AuthenticatedInstallation,
+    AuthenticationRejected,
+    IssuedCredentials,
+    PostgresSecurityService,
+    SecurityService,
+    SecurityUnavailable,
+    bearer_token,
+    client_ip,
 )
 from michisonae_api.settings import Settings, get_settings
 from michisonae_api.snapshots import (
@@ -39,6 +53,7 @@ def create_app(
     settings: Settings | None = None,
     observation_store: ObservationStore | None = None,
     snapshot_store: HazardSnapshotStore | None = None,
+    security_service: SecurityService | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
     store = observation_store
@@ -47,6 +62,9 @@ def create_app(
     snapshots = snapshot_store
     if snapshots is None and app_settings.database_url:
         snapshots = PostgresHazardSnapshotStore(app_settings)
+    security = security_service
+    if security is None and app_settings.database_url:
+        security = PostgresSecurityService(app_settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -54,9 +72,13 @@ def create_app(
             await store.open()
         if snapshots is not None:
             await snapshots.open()
+        if security is not None:
+            await security.open()
         try:
             yield
         finally:
+            if security is not None:
+                await security.close()
             if snapshots is not None:
                 await snapshots.close()
             if store is not None:
@@ -72,6 +94,63 @@ def create_app(
     application.state.settings = app_settings
     application.state.observation_store = store
     application.state.snapshot_store = snapshots
+    application.state.security_service = security
+
+    @application.middleware("http")
+    async def request_guard(request: Request, call_next: Any) -> Response:
+        correlation_id = _correlation_id(request.headers.get("x-correlation-id"))
+        request.state.correlation_id = correlation_id
+        try:
+            peer_host = None if request.client is None else request.client.host
+            if app_settings.environment == "test" and peer_host == "testclient":
+                peer_host = "127.0.0.1"
+            request.state.client_ip = client_ip(
+                peer_ip=peer_host,
+                forwarded_for=request.headers.get("x-forwarded-for"),
+                trusted_proxy_cidrs=app_settings.trusted_proxy_cidrs,
+            )
+        except ValueError:
+            response: Response = JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "code": "invalid_forwarded_address",
+                    "message": "The request forwarding address is invalid.",
+                },
+            )
+            response.headers["X-Correlation-ID"] = str(correlation_id)
+            return response
+
+        if request.method in {"POST", "PUT", "PATCH"}:
+            content_type = request.headers.get("content-type", "")
+            if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                response = JSONResponse(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    content={
+                        "code": "json_content_type_required",
+                        "message": "This endpoint requires application/json.",
+                    },
+                )
+                response.headers["X-Correlation-ID"] = str(correlation_id)
+                return response
+            length_header = request.headers.get("content-length")
+            if length_header is not None:
+                try:
+                    declared_length = int(length_header)
+                except ValueError:
+                    declared_length = app_settings.maximum_request_bytes + 1
+                if declared_length < 0 or declared_length > app_settings.maximum_request_bytes:
+                    response = _request_too_large()
+                    response.headers["X-Correlation-ID"] = str(correlation_id)
+                    return response
+            body = await request.body()
+            if len(body) > app_settings.maximum_request_bytes:
+                response = _request_too_large()
+                response.headers["X-Correlation-ID"] = str(correlation_id)
+                return response
+
+        response = await call_next(request)
+        response.headers["X-Correlation-ID"] = str(correlation_id)
+        return response
 
     @application.get(
         "/health/live",
@@ -102,7 +181,12 @@ def create_app(
         status_code=status.HTTP_202_ACCEPTED,
         response_model=ObservationBatchAccepted,
         responses={
+            status.HTTP_401_UNAUTHORIZED: {"model": ApiError},
+            status.HTTP_403_FORBIDDEN: {"model": ApiError},
             status.HTTP_409_CONFLICT: {"model": ApiError},
+            status.HTTP_413_CONTENT_TOO_LARGE: {"model": ApiError},
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {"model": ApiError},
+            status.HTTP_429_TOO_MANY_REQUESTS: {"model": ApiError},
             status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiError},
         },
     )
@@ -110,6 +194,40 @@ def create_app(
         batch: ObservationBatch,
         request: Request,
     ) -> Any:
+        current_security: SecurityService | None = request.app.state.security_service
+        if current_security is None:
+            return unavailable_response(
+                "Authenticated ingestion requires the security database.",
+                code="security_service_unavailable",
+            )
+        ip_decision = await _rate_limit(
+            current_security,
+            scope="ingestion_ip",
+            subject=request.state.client_ip,
+            limit=app_settings.ingestion_rate_limit_per_minute,
+            window_seconds=60,
+        )
+        if ip_decision is not None:
+            return ip_decision
+        principal = await _authenticate_request(current_security, request)
+        if isinstance(principal, JSONResponse):
+            return principal
+        installation_decision = await _rate_limit(
+            current_security,
+            scope="ingestion_installation",
+            subject=principal.installation_id,
+            limit=app_settings.ingestion_rate_limit_per_minute,
+            window_seconds=60,
+        )
+        if installation_decision is not None:
+            return installation_decision
+        identity_error = _observation_identity_error(batch, principal)
+        if identity_error is not None:
+            return identity_error
+        time_error = _observation_time_error(batch, app_settings)
+        if time_error is not None:
+            return time_error
+
         current_store: ObservationStore | None = request.app.state.observation_store
         if current_store is None:
             return unavailable_response(
@@ -141,6 +259,136 @@ def create_app(
             duplicate_count=result.duplicate_count,
         )
 
+    @application.post(
+        "/v1/installations:register",
+        tags=["authentication"],
+        operation_id="registerAnonymousInstallation",
+        status_code=status.HTTP_201_CREATED,
+        response_model=AnonymousCredentials,
+        responses={
+            status.HTTP_413_CONTENT_TOO_LARGE: {"model": ApiError},
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {"model": ApiError},
+            status.HTTP_429_TOO_MANY_REQUESTS: {"model": ApiError},
+            status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiError},
+        },
+    )
+    async def register_installation(
+        registration: InstallationRegistration,
+        request: Request,
+    ) -> Any:
+        current_security: SecurityService | None = request.app.state.security_service
+        if current_security is None:
+            return unavailable_response(
+                "Anonymous registration requires the security database.",
+                code="security_service_unavailable",
+            )
+        rate_response = await _rate_limit(
+            current_security,
+            scope="registration_ip",
+            subject=request.state.client_ip,
+            limit=app_settings.registration_rate_limit_per_hour,
+            window_seconds=3600,
+        )
+        if rate_response is not None:
+            return rate_response
+        try:
+            credentials = await current_security.register(
+                attestation=registration.attestation,
+                correlation_id=request.state.correlation_id,
+                client_ip=request.state.client_ip,
+            )
+        except SecurityUnavailable:
+            logger.exception("Anonymous installation registration failed")
+            return unavailable_response(
+                "Anonymous registration is temporarily unavailable.",
+                code="security_service_unavailable",
+            )
+        return _credential_response(credentials, status.HTTP_201_CREATED)
+
+    @application.post(
+        "/v1/auth:refresh",
+        tags=["authentication"],
+        operation_id="refreshAnonymousCredentials",
+        response_model=AnonymousCredentials,
+        responses={
+            status.HTTP_401_UNAUTHORIZED: {"model": ApiError},
+            status.HTTP_413_CONTENT_TOO_LARGE: {"model": ApiError},
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {"model": ApiError},
+            status.HTTP_429_TOO_MANY_REQUESTS: {"model": ApiError},
+            status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiError},
+        },
+    )
+    async def refresh_credentials(
+        refresh: RefreshCredentialRequest,
+        request: Request,
+    ) -> Any:
+        current_security: SecurityService | None = request.app.state.security_service
+        if current_security is None:
+            return unavailable_response(
+                "Credential refresh requires the security database.",
+                code="security_service_unavailable",
+            )
+        rate_response = await _rate_limit(
+            current_security,
+            scope="refresh_ip",
+            subject=request.state.client_ip,
+            limit=app_settings.refresh_rate_limit_per_minute,
+            window_seconds=60,
+        )
+        if rate_response is not None:
+            return rate_response
+        try:
+            credentials = await current_security.refresh(
+                refresh_token=refresh.refresh_token,
+                correlation_id=request.state.correlation_id,
+                client_ip=request.state.client_ip,
+            )
+        except AuthenticationRejected as error:
+            return _authentication_error(error)
+        except SecurityUnavailable:
+            logger.exception("Anonymous credential refresh failed")
+            return unavailable_response(
+                "Credential refresh is temporarily unavailable.",
+                code="security_service_unavailable",
+            )
+        return _credential_response(credentials)
+
+    @application.delete(
+        "/v1/installations/current",
+        tags=["authentication"],
+        operation_id="revokeAnonymousInstallation",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        response_model=None,
+        responses={
+            status.HTTP_401_UNAUTHORIZED: {"model": ApiError},
+            status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiError},
+        },
+    )
+    async def revoke_installation(request: Request) -> Any:
+        current_security: SecurityService | None = request.app.state.security_service
+        if current_security is None:
+            return unavailable_response(
+                "Installation revocation requires the security database.",
+                code="security_service_unavailable",
+            )
+        principal = await _authenticate_request(current_security, request)
+        if isinstance(principal, JSONResponse):
+            return principal
+        try:
+            await current_security.revoke(
+                principal,
+                correlation_id=request.state.correlation_id,
+                client_ip=request.state.client_ip,
+            )
+        except SecurityUnavailable:
+            logger.exception("Anonymous installation revocation failed")
+            return unavailable_response(
+                "Installation revocation is temporarily unavailable.",
+                code="security_service_unavailable",
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     @application.get(
         "/v1/regions/{region_id}/hazards",
         tags=["hazards"],
@@ -150,6 +398,7 @@ def create_app(
             status.HTTP_304_NOT_MODIFIED: {"description": "Snapshot is unchanged."},
             status.HTTP_400_BAD_REQUEST: {"model": ApiError},
             status.HTTP_404_NOT_FOUND: {"model": ApiError},
+            status.HTTP_429_TOO_MANY_REQUESTS: {"model": ApiError},
             status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ApiError},
         },
     )
@@ -178,6 +427,18 @@ def create_app(
                     ),
                 },
             )
+
+        current_security: SecurityService | None = request.app.state.security_service
+        if current_security is not None:
+            rate_response = await _rate_limit(
+                current_security,
+                scope="public_read_ip",
+                subject=request.state.client_ip,
+                limit=app_settings.public_read_rate_limit_per_minute,
+                window_seconds=60,
+            )
+            if rate_response is not None:
+                return rate_response
 
         current_store: HazardSnapshotStore | None = request.app.state.snapshot_store
         if current_store is None:
@@ -321,6 +582,152 @@ def _etag_matches(header: str | None, etag: str) -> bool:
         if normalized == etag:
             return True
     return False
+
+
+async def _authenticate_request(
+    security: SecurityService,
+    request: Request,
+) -> AuthenticatedInstallation | JSONResponse:
+    try:
+        token = bearer_token(request.headers.get("authorization"))
+        return await security.authenticate(token)
+    except AuthenticationRejected as error:
+        return _authentication_error(error)
+    except SecurityUnavailable:
+        logger.exception("Access credential lookup failed")
+        return unavailable_response(
+            "Authentication is temporarily unavailable.",
+            code="security_service_unavailable",
+        )
+
+
+async def _rate_limit(
+    security: SecurityService,
+    *,
+    scope: str,
+    subject: str,
+    limit: int,
+    window_seconds: int,
+) -> JSONResponse | None:
+    try:
+        decision = await security.check_rate_limit(
+            scope=scope,
+            subject=subject,
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+    except SecurityUnavailable:
+        logger.exception("Atomic rate limit failed")
+        return unavailable_response(
+            "Abuse protection is temporarily unavailable.",
+            code="security_service_unavailable",
+        )
+    if decision.allowed:
+        return None
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "code": "rate_limit_exceeded",
+            "message": "Too many requests; retry after the stated delay.",
+        },
+        headers={
+            "Retry-After": str(decision.retry_after_seconds),
+            "X-RateLimit-Limit": str(decision.limit),
+            "X-RateLimit-Remaining": "0",
+        },
+    )
+
+
+def _credential_response(
+    credentials: IssuedCredentials,
+    response_status: int = status.HTTP_200_OK,
+) -> JSONResponse:
+    body = AnonymousCredentials(
+        installation_id=credentials.installation_id,
+        access_token=credentials.access_token,
+        access_expires_at=credentials.access_expires_at,
+        refresh_token=credentials.refresh_token,
+        refresh_expires_at=credentials.refresh_expires_at,
+    )
+    return JSONResponse(
+        status_code=response_status,
+        content=body.model_dump(mode="json"),
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+def _authentication_error(error: AuthenticationRejected) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"code": error.code, "message": error.message},
+        headers={
+            "WWW-Authenticate": "Bearer",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+def _observation_identity_error(
+    batch: ObservationBatch,
+    principal: AuthenticatedInstallation,
+) -> JSONResponse | None:
+    if any(
+        observation.installation_id != principal.installation_id
+        for observation in batch.observations
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={
+                "code": "installation_identity_mismatch",
+                "message": ("Every observation must belong to the authenticated installation."),
+            },
+        )
+    return None
+
+
+def _observation_time_error(
+    batch: ObservationBatch,
+    settings: Settings,
+) -> JSONResponse | None:
+    now = datetime.now(UTC)
+    oldest = now - timedelta(seconds=settings.observation_maximum_age_seconds)
+    newest = now + timedelta(seconds=settings.observation_future_skew_seconds)
+    if any(
+        observation.detected_at < oldest or observation.detected_at > newest
+        for observation in batch.observations
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                "code": "observation_time_out_of_bounds",
+                "message": (
+                    "Observation time is outside the accepted offline or clock-skew window."
+                ),
+            },
+        )
+    return None
+
+
+def _request_too_large() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+        content={
+            "code": "request_too_large",
+            "message": "The request exceeds the configured size limit.",
+        },
+    )
+
+
+def _correlation_id(value: str | None) -> UUID:
+    if value is not None:
+        try:
+            return UUID(value)
+        except ValueError:
+            pass
+    return uuid4()
 
 
 app = create_app()

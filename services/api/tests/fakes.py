@@ -1,9 +1,15 @@
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from michisonae_api.models import ObservationBatch
+from michisonae_api.security import (
+    AuthenticatedInstallation,
+    AuthenticationRejected,
+    IssuedCredentials,
+    RateLimitDecision,
+)
 from michisonae_api.snapshots import SnapshotRecord, SnapshotUnavailable
 from michisonae_api.store import (
     EventIdConflict,
@@ -141,3 +147,106 @@ def snapshot_record(
             ],
         },
     )
+
+
+class MemorySecurityService:
+    def __init__(
+        self,
+        *,
+        installation_id: str = "anonymous-install-0001",
+    ) -> None:
+        self.installation_id = installation_id
+        self.access_token = "test-access-token-value"
+        self.refresh_token = "test-refresh-token-value-with-enough-characters"
+        self.opened = False
+        self.closed = False
+        self.revoked = False
+        self.rate_counts: dict[tuple[str, str], int] = {}
+
+    async def open(self) -> None:
+        self.opened = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def register(
+        self,
+        *,
+        attestation: str | None,
+        correlation_id: UUID,
+        client_ip: str,
+    ) -> IssuedCredentials:
+        del attestation, correlation_id, client_ip
+        self.installation_id = f"ins_{uuid4().hex}"
+        self.access_token = f"test-access-{uuid4().hex}"
+        self.refresh_token = f"test-refresh-{uuid4().hex}"
+        self.revoked = False
+        return self._credentials()
+
+    async def refresh(
+        self,
+        *,
+        refresh_token: str,
+        correlation_id: UUID,
+        client_ip: str,
+    ) -> IssuedCredentials:
+        del correlation_id, client_ip
+        if self.revoked or refresh_token != self.refresh_token:
+            raise AuthenticationRejected(
+                "invalid_refresh_token",
+                "The refresh credential is invalid or expired.",
+            )
+        self.access_token = f"test-access-{uuid4().hex}"
+        self.refresh_token = f"test-refresh-{uuid4().hex}"
+        return self._credentials()
+
+    async def authenticate(self, access_token: str) -> AuthenticatedInstallation:
+        if self.revoked or access_token != self.access_token:
+            raise AuthenticationRejected(
+                "invalid_access_token",
+                "The access credential is invalid or expired.",
+            )
+        return AuthenticatedInstallation(
+            installation_id=self.installation_id,
+            family_id=uuid4(),
+            access_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    async def revoke(
+        self,
+        principal: AuthenticatedInstallation,
+        *,
+        correlation_id: UUID,
+        client_ip: str,
+    ) -> None:
+        del principal, correlation_id, client_ip
+        self.revoked = True
+
+    async def check_rate_limit(
+        self,
+        *,
+        scope: str,
+        subject: str,
+        limit: int,
+        window_seconds: int,
+    ) -> RateLimitDecision:
+        del window_seconds
+        key = (scope, subject)
+        count = self.rate_counts.get(key, 0) + 1
+        self.rate_counts[key] = count
+        return RateLimitDecision(
+            allowed=count <= limit,
+            limit=limit,
+            remaining=max(0, limit - count),
+            retry_after_seconds=60,
+        )
+
+    def _credentials(self) -> IssuedCredentials:
+        now = datetime.now(UTC)
+        return IssuedCredentials(
+            installation_id=self.installation_id,
+            access_token=self.access_token,
+            access_expires_at=now + timedelta(hours=1),
+            refresh_token=self.refresh_token,
+            refresh_expires_at=now + timedelta(days=30),
+        )

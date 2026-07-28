@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from fakes import MemorySnapshotStore, snapshot_record
+from fakes import MemorySecurityService, MemorySnapshotStore, snapshot_record
 from fastapi.testclient import TestClient
 
 from michisonae_api.main import create_app
@@ -57,8 +57,13 @@ def test_snapshot_content_is_deterministic_and_excludes_internal_identity() -> N
 
 def test_empty_region_is_honest_and_conditionally_cacheable() -> None:
     store = MemorySnapshotStore()
+    security = MemorySecurityService()
     with TestClient(
-        create_app(Settings(environment="test"), snapshot_store=store),
+        create_app(
+            Settings(environment="test"),
+            snapshot_store=store,
+            security_service=security,
+        ),
     ) as client:
         first = client.get(f"/v1/regions/{REGION_ID}/hazards")
         cached = client.get(
@@ -88,9 +93,14 @@ def test_current_snapshot_supports_etag_and_staleness_headers() -> None:
         generated_at=generated_at,
     )
     store = MemorySnapshotStore((record,))
+    security = MemorySecurityService()
     app_settings = Settings(environment="test", snapshot_stale_after_seconds=60)
     with TestClient(
-        create_app(app_settings, snapshot_store=store),
+        create_app(
+            app_settings,
+            snapshot_store=store,
+            security_service=security,
+        ),
     ) as client:
         response = client.get(f"/v1/regions/{REGION_ID}/hazards")
         cached = client.get(
@@ -118,6 +128,7 @@ def test_immutable_version_has_long_lived_public_cache_policy() -> None:
         create_app(
             Settings(environment="test"),
             snapshot_store=MemorySnapshotStore((record,)),
+            security_service=MemorySecurityService(),
         ),
     ) as client:
         response = client.get(
@@ -134,6 +145,7 @@ def test_invalid_region_and_missing_immutable_version_are_distinct() -> None:
         create_app(
             Settings(environment="test"),
             snapshot_store=MemorySnapshotStore(),
+            security_service=MemorySecurityService(),
         ),
     ) as client:
         invalid = client.get("/v1/regions/not-a-region/hazards")
@@ -153,6 +165,7 @@ def test_snapshot_store_failure_returns_retryable_503() -> None:
         create_app(
             Settings(environment="test"),
             snapshot_store=MemorySnapshotStore(fail_reads=True),
+            security_service=MemorySecurityService(),
         ),
     ) as client:
         response = client.get(f"/v1/regions/{REGION_ID}/hazards")

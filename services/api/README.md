@@ -89,6 +89,37 @@ immutable version suitable for a CDN. A region with no published snapshot
 returns an empty list with `coverage.status=unknown`; it does not claim the
 roads are hazard-free.
 
+## Anonymous installation security
+
+Core use requires no person account. The app registers one anonymous
+installation and stores the returned opaque credentials in Android secure
+storage:
+
+- `POST /v1/installations:register` issues a server-generated installation ID,
+  short-lived access token, and rotating refresh token;
+- `POST /v1/auth:refresh` consumes each refresh token exactly once;
+- `DELETE /v1/installations/current` revokes the installation and every token
+  family;
+- `POST /v1/observations:batch` requires a Bearer access token and rejects any
+  body installation ID that differs from the authenticated installation.
+
+Only SHA-256 credential hashes are stored. A reused refresh token revokes its
+entire family, including the successor access token. Android must therefore
+single-flight refresh: only one refresh request may be active for an
+installation at a time. Token responses use `Cache-Control: no-store`.
+
+Observations older than the configured offline window or too far in the future
+are rejected before storage. Atomic PostgreSQL limits protect registration,
+refresh, ingestion, and origin snapshot reads by HMAC-pseudonymized
+installation/IP subjects. `X-Forwarded-For` is ignored unless the direct peer
+is in `MICHI_TRUSTED_PROXY_CIDRS`; trusted chains are evaluated from right to
+left so an attacker-supplied leftmost value cannot bypass an IP limit.
+
+All responses carry a validated or server-generated `X-Correlation-ID`.
+JSON content type and request size are enforced before endpoint processing.
+Security audit rows contain event codes, pseudonymized IPs, and minimized
+details—never credentials, raw request bodies, or trip sequences.
+
 ## Local development
 
 Requirements:
@@ -146,5 +177,20 @@ timeouts are configurable with:
 - `MICHI_SNAPSHOT_CACHE_MAX_AGE_SECONDS`
 - `MICHI_SNAPSHOT_STALE_WHILE_REVALIDATE_SECONDS`
 - `MICHI_SNAPSHOT_STALE_AFTER_SECONDS`
+- `MICHI_ACCESS_TOKEN_TTL_SECONDS`
+- `MICHI_REFRESH_TOKEN_TTL_SECONDS`
+- `MICHI_TOKEN_FAMILY_TTL_SECONDS`
+- `MICHI_MAXIMUM_ACTIVE_ACCESS_TOKENS`
+- `MICHI_OBSERVATION_MAXIMUM_AGE_SECONDS`
+- `MICHI_OBSERVATION_FUTURE_SKEW_SECONDS`
+- `MICHI_MAXIMUM_REQUEST_BYTES`
+- `MICHI_TRUSTED_PROXY_CIDRS`
+- `MICHI_RATE_LIMIT_HASH_SECRET`
+- `MICHI_REGISTRATION_RATE_LIMIT_PER_HOUR`
+- `MICHI_REFRESH_RATE_LIMIT_PER_MINUTE`
+- `MICHI_INGESTION_RATE_LIMIT_PER_MINUTE`
+- `MICHI_PUBLIC_READ_RATE_LIMIT_PER_MINUTE`
 
-Do not commit secrets in `.env` files.
+`MICHI_RATE_LIMIT_HASH_SECRET` must be a separately managed secret with at
+least 32 characters in staging/production. Do not commit secrets in `.env`
+files.

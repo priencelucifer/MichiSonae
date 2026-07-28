@@ -21,3 +21,9 @@ Regional hazard reads are anonymous and publicly cacheable. Current snapshots
 support `ETag`/`If-None-Match`; content-addressed versions are immutable. An
 empty response reports unknown community coverage and must not be interpreted
 as a hazard-free road.
+
+Contribution also requires no user account, but it is bound to a registered
+anonymous installation. Registration and refresh responses are never cacheable.
+Access tokens authenticate ingestion; refresh tokens rotate once and reuse
+revokes their token family. Attestation is an optional risk signal, never proof
+that an observation is true.

@@ -119,3 +119,29 @@ class RegionalHazardSnapshot(BaseModel):
         if self.hazard_count != len(self.hazards):
             raise ValueError("hazard_count must equal the number of hazards")
         return self
+
+
+class InstallationRegistration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
+    attestation: Annotated[str, StringConstraints(min_length=16, max_length=2048)] | None = None
+
+
+class RefreshCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
+    refresh_token: Annotated[str, StringConstraints(min_length=40, max_length=256)]
+
+
+class AnonymousCredentials(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"] = "1.0"
+    installation_id: InstallationId
+    token_type: Literal["Bearer"] = "Bearer"
+    access_token: str
+    access_expires_at: datetime
+    refresh_token: str
+    refresh_expires_at: datetime

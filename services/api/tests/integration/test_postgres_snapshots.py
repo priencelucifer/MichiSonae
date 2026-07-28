@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(
     reason="MICHI_TEST_DATABASE_URL is required for PostgreSQL integration tests",
 )
 REGION_ID = "gh5:wh9hx"
+AUTHORIZATIONS: dict[str, tuple[str, str]] = {}
 
 
 def settings() -> Settings:
@@ -60,6 +61,12 @@ def reset_database() -> None:
         connection.execute(
             """
             TRUNCATE
+                public.security_audit_events,
+                public.security_rate_limits,
+                public.auth_access_tokens,
+                public.auth_refresh_tokens,
+                public.auth_token_families,
+                public.anonymous_installations,
                 public.regional_snapshot_heads,
                 public.regional_hazard_snapshots,
                 public.regional_snapshot_work,
@@ -72,15 +79,35 @@ def reset_database() -> None:
             RESTART IDENTITY
             """
         )
+    AUTHORIZATIONS.clear()
 
 
 def submit(*rows: dict[str, object]) -> None:
     with TestClient(create_app(settings())) as client:
-        response = client.post(
-            "/v1/observations:batch",
-            json={"schema_version": "1.0", "observations": list(rows)},
-        )
-    assert response.status_code == 202
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["installation_id"]), []).append(row)
+        for alias, group in grouped.items():
+            if alias not in AUTHORIZATIONS:
+                registration = client.post(
+                    "/v1/installations:register",
+                    json={"schema_version": "1.0"},
+                )
+                assert registration.status_code == 201
+                body = registration.json()
+                AUTHORIZATIONS[alias] = (
+                    body["installation_id"],
+                    body["access_token"],
+                )
+            installation_id, access_token = AUTHORIZATIONS[alias]
+            for row in group:
+                row["installation_id"] = installation_id
+            response = client.post(
+                "/v1/observations:batch",
+                json={"schema_version": "1.0", "observations": group},
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            assert response.status_code == 202
 
 
 def project_and_publish() -> tuple[int, int]:

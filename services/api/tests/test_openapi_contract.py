@@ -31,8 +31,11 @@ def test_public_snapshot_schemas_match_generated_required_fields() -> None:
     generated = create_app(Settings(environment="test")).openapi()
 
     for schema_name in (
+        "AnonymousCredentials",
         "HazardCoverage",
+        "InstallationRegistration",
         "PublicHazard",
+        "RefreshCredentialRequest",
         "RegionalHazardSnapshot",
     ):
         committed_schema = committed["components"]["schemas"][schema_name]
