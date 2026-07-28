@@ -125,7 +125,13 @@ jobs:
             < ../../infra/database/least-privilege-roles.sql
           docker exec "$container_id" \
             psql -v ON_ERROR_STOP=1 -U michisonae -d michisonae_test \
-            -Atc "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'michi_%'" \
+            -Atc "SELECT count(*) FROM pg_roles WHERE rolname IN (
+              'michi_api',
+              'michi_projection',
+              'michi_snapshot',
+              'michi_maintenance',
+              'michi_backup'
+            )" \
             | grep -qx "5"
       - run: ruff check .
       - run: mypy
