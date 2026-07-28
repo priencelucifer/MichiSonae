@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     observation_retention_days: int = Field(default=90, ge=30, le=90)
     maintenance_batch_size: int = Field(default=500, ge=1, le=5000)
     dead_letter_quarantine_days: int = Field(default=7, ge=1, le=90)
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    json_logging_enabled: bool = True
+    worker_health_host: str = "0.0.0.0"
+    projection_health_port: int = Field(default=9101, ge=0, le=65_535)
+    snapshot_health_port: int = Field(default=9102, ge=0, le=65_535)
+    worker_shutdown_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
 
     @model_validator(mode="after")
     def pool_maximum_must_cover_minimum(self) -> Self:
@@ -88,6 +94,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "rate_limit_hash_secret must have at least 32 characters outside local/test"
             )
+        if self.environment in {"staging", "production"} and not self.json_logging_enabled:
+            raise ValueError("json_logging_enabled must remain true in staging/production")
         if self.token_family_ttl_seconds < self.refresh_token_ttl_seconds:
             raise ValueError("token_family_ttl_seconds must be >= refresh_token_ttl_seconds")
         try:

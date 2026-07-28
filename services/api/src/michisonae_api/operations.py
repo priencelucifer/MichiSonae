@@ -250,12 +250,13 @@ RETURNING region_id
 INSERT_OPERATIONS_AUDIT_SQL = """
 INSERT INTO public.operations_audit_events (
     command_id,
+    correlation_id,
     action,
     mode,
     outcome,
     details
 )
-VALUES (%s, %s, %s, %s, %s)
+VALUES (%s, %s, %s, %s, %s, %s)
 """
 
 CONSISTENCY_SQL = """
@@ -596,6 +597,7 @@ class PostgresMaintenance:
         connection.execute(
             INSERT_OPERATIONS_AUDIT_SQL,
             (
+                command_id,
                 command_id,
                 action,
                 mode,

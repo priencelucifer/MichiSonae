@@ -85,14 +85,16 @@ inserted_observations AS (
 queued_events AS (
     INSERT INTO public.observation_outbox (
         observation_event_id,
-        payload
+        payload,
+        correlation_id
     )
     SELECT
         event_id,
         jsonb_build_object(
             'schema_version', '1.0',
             'observation', payload
-        )
+        ),
+        %s
     FROM inserted_observations
     RETURNING observation_event_id
 )
@@ -154,7 +156,11 @@ class ObservationStore(Protocol):
 
     async def ready(self) -> bool: ...
 
-    async def ingest(self, batch: ObservationBatch) -> IngestionResult: ...
+    async def ingest(
+        self,
+        batch: ObservationBatch,
+        correlation_id: UUID,
+    ) -> IngestionResult: ...
 
 
 class PostgresObservationStore:
@@ -183,6 +189,9 @@ class PostgresObservationStore:
     async def close(self) -> None:
         await self._pool.close()
 
+    def pool_stats(self) -> dict[str, int]:
+        return self._pool.get_stats()
+
     async def ready(self) -> bool:
         migration = expected_migration()
         try:
@@ -196,14 +205,18 @@ class PostgresObservationStore:
         except PsycopgError:
             return False
 
-    async def ingest(self, batch: ObservationBatch) -> IngestionResult:
+    async def ingest(
+        self,
+        batch: ObservationBatch,
+        correlation_id: UUID,
+    ) -> IngestionResult:
         records = [_observation_record(observation) for observation in batch.observations]
         try:
             async with self._pool.connection(timeout=self._timeout_seconds) as connection:
                 async with connection.transaction():
                     cursor = await connection.execute(
                         INSERT_BATCH_SQL,
-                        (Jsonb(records),),
+                        (Jsonb(records), correlation_id),
                     )
                     counts = await cursor.fetchone()
                     if counts is None:
@@ -217,10 +230,7 @@ class PostgresObservationStore:
                         FIND_CONFLICTS_SQL,
                         (Jsonb(records),),
                     )
-                    conflicts = tuple(
-                        UUID(str(row[0]))
-                        for row in await conflict_cursor.fetchall()
-                    )
+                    conflicts = tuple(UUID(str(row[0])) for row in await conflict_cursor.fetchall())
                     if conflicts:
                         raise EventIdConflict(conflicts)
         except (EventIdConflict, StoreUnavailable):

@@ -354,3 +354,38 @@ def test_rebuild_reproduces_logical_projection() -> None:
     assert reset_count == 3
     assert result.projected_count == 3
     assert projection_row() == before
+
+
+def test_correlation_id_flows_from_api_to_projection_and_snapshot_work() -> None:
+    correlation_id = uuid4()
+    row = observation(installation_id="correlation-alias")
+    with TestClient(create_app(settings())) as client:
+        registration = client.post(
+            "/v1/installations:register",
+            json={"schema_version": "1.0"},
+        )
+        assert registration.status_code == 201
+        credentials = registration.json()
+        row["installation_id"] = credentials["installation_id"]
+        response = client.post(
+            "/v1/observations:batch",
+            json=batch(row),
+            headers={
+                "Authorization": f"Bearer {credentials['access_token']}",
+                "X-Correlation-ID": str(correlation_id),
+            },
+        )
+    assert response.status_code == 202
+    assert run_once().projected_count == 1
+
+    assert DATABASE_URL is not None
+    with psycopg.connect(DATABASE_URL) as connection:
+        propagated = connection.execute(
+            """
+            SELECT outbox.correlation_id, work.correlation_id
+            FROM public.observation_outbox AS outbox
+            CROSS JOIN public.regional_snapshot_work AS work
+            """
+        ).fetchone()
+
+    assert propagated == (correlation_id, correlation_id)

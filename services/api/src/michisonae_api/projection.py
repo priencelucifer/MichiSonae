@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -9,10 +10,13 @@ from uuid import UUID
 from psycopg import Error as PsycopgError
 from psycopg_pool import AsyncConnectionPool
 
+from michisonae_api.migration import expected_migration
+from michisonae_api.observability import correlation_scope
 from michisonae_api.settings import Settings
 
 PROJECTION_POLICY_VERSION = "projection-v1"
 PROJECTION_REBUILD_LOCK_ID = 5_432_240_840_150_319_487
+logger = logging.getLogger(__name__)
 
 CLAIM_OUTBOX_SQL = """
 WITH claimable AS (
@@ -34,7 +38,11 @@ SET claimed_by = %s,
     last_error = NULL
 FROM claimable
 WHERE item.id = claimable.id
-RETURNING item.id, item.observation_event_id, item.delivery_attempts
+RETURNING
+    item.id,
+    item.observation_event_id,
+    item.delivery_attempts,
+    item.correlation_id
 """
 
 RENEW_CLAIM_SQL = """
@@ -256,10 +264,11 @@ RETURNING id
 """
 
 MARK_REGION_DIRTY_SQL = """
-INSERT INTO public.regional_snapshot_work (region_id)
-VALUES (%s)
+INSERT INTO public.regional_snapshot_work (region_id, correlation_id)
+VALUES (%s, %s)
 ON CONFLICT (region_id) DO UPDATE
 SET generation = regional_snapshot_work.generation + 1,
+    correlation_id = EXCLUDED.correlation_id,
     dirty_at = clock_timestamp(),
     next_attempt_at = clock_timestamp(),
     delivery_attempts = CASE
@@ -318,6 +327,14 @@ SELECT
         0
     )::double precision AS oldest_pending_seconds
 FROM public.observation_outbox
+"""
+
+READINESS_SQL = """
+SELECT EXISTS (
+    SELECT 1
+    FROM public.schema_migrations
+    WHERE version = %s AND checksum = %s
+)
 """
 
 RESET_PROJECTIONS_SQL = """
@@ -474,6 +491,7 @@ class OutboxClaim:
     outbox_id: int
     event_id: UUID
     attempt: int
+    correlation_id: UUID
 
 
 @dataclass(frozen=True)
@@ -540,6 +558,24 @@ class PostgresProjectionWorker:
     async def close(self) -> None:
         await self._pool.close()
 
+    async def ready(self) -> bool:
+        migration = expected_migration()
+        try:
+            async with self._pool.connection(
+                timeout=self._settings.database_pool_timeout_seconds
+            ) as connection:
+                cursor = await connection.execute(
+                    READINESS_SQL,
+                    (migration.version, migration.checksum),
+                )
+                row = await cursor.fetchone()
+                return bool(row and row[0])
+        except PsycopgError:
+            return False
+
+    def pool_stats(self) -> dict[str, int]:
+        return self._pool.get_stats()
+
     async def run_once(self) -> ProjectionRunResult:
         claims = await self._claim_batch()
         projected_count = 0
@@ -548,19 +584,34 @@ class PostgresProjectionWorker:
         dead_letter_count = 0
 
         for claim in claims:
-            try:
-                projected = await self._process_claim(claim)
-            except Exception as error:
-                dead_lettered = await self._record_failure(claim, error)
-                if dead_lettered:
-                    dead_letter_count += 1
+            with correlation_scope(claim.correlation_id):
+                try:
+                    projected = await self._process_claim(claim)
+                except Exception as error:
+                    failure_code = projection_failure_code(error)
+                    dead_lettered = await self._record_failure(claim, error)
+                    logger.warning(
+                        "projection_claim_failed",
+                        extra={
+                            "component": "projection",
+                            "failure_code": failure_code,
+                            "outcome": ("dead_letter" if dead_lettered else "retry"),
+                        },
+                    )
+                    if dead_lettered:
+                        dead_letter_count += 1
+                    else:
+                        retry_count += 1
                 else:
-                    retry_count += 1
-            else:
-                if projected:
-                    projected_count += 1
-                else:
-                    replayed_count += 1
+                    outcome = "projected" if projected else "replayed"
+                    logger.info(
+                        "projection_claim_completed",
+                        extra={"component": "projection", "outcome": outcome},
+                    )
+                    if projected:
+                        projected_count += 1
+                    else:
+                        replayed_count += 1
 
         return ProjectionRunResult(
             claimed_count=len(claims),
@@ -715,6 +766,7 @@ class PostgresProjectionWorker:
                 outbox_id=int(row[0]),
                 event_id=UUID(str(row[1])),
                 attempt=int(row[2]),
+                correlation_id=UUID(str(row[3])),
             )
             for row in sorted(rows, key=lambda item: int(item[0]))
         )
@@ -776,6 +828,7 @@ class PostgresProjectionWorker:
                             (
                                 f"gh{region_precision}:"
                                 f"{observation.spatial_cell[:region_precision]}",
+                                claim.correlation_id,
                             ),
                         )
 
