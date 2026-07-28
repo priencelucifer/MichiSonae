@@ -94,6 +94,16 @@ jobs:
           cache-dependency-path: services/api/pyproject.toml
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
+      - name: Validate operational configuration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          path = Path("../../infra/observability/prometheus-alerts.yml")
+          document = yaml.safe_load(path.read_text(encoding="utf-8"))
+          assert document["groups"][0]["rules"]
+          PY
       - run: python -m michisonae_api.migrate
       - run: ruff check .
       - run: mypy

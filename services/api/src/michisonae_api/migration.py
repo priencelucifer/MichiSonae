@@ -12,6 +12,7 @@ MIGRATION_FILES = (
     "0003_regional_hazard_snapshots.sql",
     "0004_anonymous_installation_security.sql",
     "0005_backend_lifecycle_operations.sql",
+    "0006_backend_observability.sql",
 )
 MIGRATION_LOCK_ID = 4_885_343_490_975_695_649
 

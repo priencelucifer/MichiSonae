@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any, Protocol
+from uuid import UUID
 
 from psycopg import Error as PsycopgError
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from michisonae_api.migration import expected_migration
+from michisonae_api.observability import correlation_scope
 from michisonae_api.projection import projection_retry_delay
 from michisonae_api.settings import Settings
 
 REGION_ALPHABET = "0123456789bcdefghjkmnpqrstuvwxyz"
 REGION_PATTERN = re.compile(r"^gh(?P<precision>[1-9][0-9]*):(?P<cell>[0-9a-z]+)$")
+logger = logging.getLogger(__name__)
 
 CLAIM_WORK_SQL = """
 WITH claimable AS (
@@ -41,7 +46,8 @@ WHERE work.region_id = claimable.region_id
 RETURNING
     work.region_id,
     work.claimed_generation,
-    work.delivery_attempts
+    work.delivery_attempts,
+    work.correlation_id
 """
 
 RENEW_WORK_SQL = """
@@ -170,6 +176,14 @@ SELECT
 FROM public.regional_snapshot_work
 """
 
+READINESS_SQL = """
+SELECT EXISTS (
+    SELECT 1
+    FROM public.schema_migrations
+    WHERE version = %s AND checksum = %s
+)
+"""
+
 SEED_REGIONS_SQL = """
 INSERT INTO public.regional_snapshot_work (region_id)
 SELECT DISTINCT
@@ -231,6 +245,7 @@ class SnapshotWorkClaim:
     region_id: str
     generation: int
     attempt: int
+    correlation_id: UUID
 
 
 @dataclass(frozen=True)
@@ -267,6 +282,8 @@ class HazardSnapshotStore(Protocol):
 
     async def close(self) -> None: ...
 
+    async def ready(self) -> bool: ...
+
     async def get(
         self,
         region_id: str,
@@ -284,6 +301,12 @@ class PostgresHazardSnapshotStore:
 
     async def close(self) -> None:
         await self._pool.close()
+
+    async def ready(self) -> bool:
+        return await _ready(self._pool, self._settings)
+
+    def pool_stats(self) -> dict[str, int]:
+        return self._pool.get_stats()
 
     async def get(
         self,
@@ -317,6 +340,12 @@ class PostgresSnapshotPublisher:
     async def close(self) -> None:
         await self._pool.close()
 
+    async def ready(self) -> bool:
+        return await _ready(self._pool, self._settings)
+
+    def pool_stats(self) -> dict[str, int]:
+        return self._pool.get_stats()
+
     async def seed_current_regions(self) -> int:
         precision = self._settings.snapshot_region_geohash_precision
         try:
@@ -338,18 +367,34 @@ class PostgresSnapshotPublisher:
         retry_count = 0
         dead_letter_count = 0
         for claim in claims:
-            try:
-                published = await self._process_claim(claim)
-            except Exception as error:
-                if await self._record_failure(claim, error):
-                    dead_letter_count += 1
+            with correlation_scope(claim.correlation_id):
+                try:
+                    published = await self._process_claim(claim)
+                except Exception as error:
+                    failure_code = snapshot_failure_code(error)
+                    dead_lettered = await self._record_failure(claim, error)
+                    logger.warning(
+                        "snapshot_claim_failed",
+                        extra={
+                            "component": "snapshot",
+                            "failure_code": failure_code,
+                            "outcome": ("dead_letter" if dead_lettered else "retry"),
+                        },
+                    )
+                    if dead_lettered:
+                        dead_letter_count += 1
+                    else:
+                        retry_count += 1
                 else:
-                    retry_count += 1
-            else:
-                if published:
-                    published_count += 1
-                else:
-                    unchanged_count += 1
+                    outcome = "published" if published else "unchanged"
+                    logger.info(
+                        "snapshot_claim_completed",
+                        extra={"component": "snapshot", "outcome": outcome},
+                    )
+                    if published:
+                        published_count += 1
+                    else:
+                        unchanged_count += 1
         return SnapshotRunResult(
             claimed_count=len(claims),
             published_count=published_count,
@@ -416,6 +461,7 @@ class PostgresSnapshotPublisher:
                 region_id=str(row[0]),
                 generation=int(row[1]),
                 attempt=int(row[2]),
+                correlation_id=UUID(str(row[3])),
             )
             for row in rows
         )
@@ -651,3 +697,20 @@ def _pool(settings: Settings, name: str) -> AsyncConnectionPool[Any]:
         open=False,
         name=name,
     )
+
+
+async def _ready(
+    pool: AsyncConnectionPool[Any],
+    settings: Settings,
+) -> bool:
+    migration = expected_migration()
+    try:
+        async with pool.connection(timeout=settings.database_pool_timeout_seconds) as connection:
+            cursor = await connection.execute(
+                READINESS_SQL,
+                (migration.version, migration.checksum),
+            )
+            row = await cursor.fetchone()
+            return bool(row and row[0])
+    except PsycopgError:
+        return False

@@ -236,3 +236,29 @@ def test_atomic_installation_rate_limit_and_proxy_spoof_resistance() -> None:
         ).fetchone()
     assert count == (5,)
     assert ip_subjects == (1,)
+
+
+def test_security_audit_preserves_correlation_without_credentials() -> None:
+    correlation_id = uuid4()
+    with TestClient(create_app(settings())) as client:
+        response = client.post(
+            "/v1/installations:register",
+            json={"schema_version": "1.0"},
+            headers={"X-Correlation-ID": str(correlation_id)},
+        )
+    assert response.status_code == 201
+
+    assert DATABASE_URL is not None
+    with psycopg.connect(DATABASE_URL) as connection:
+        audit = connection.execute(
+            """
+            SELECT correlation_id, details::text
+            FROM public.security_audit_events
+            WHERE event_type = 'installation_registered'
+            """
+        ).fetchone()
+
+    assert audit is not None
+    assert audit[0] == correlation_id
+    assert response.json()["access_token"] not in audit[1]
+    assert response.json()["refresh_token"] not in audit[1]

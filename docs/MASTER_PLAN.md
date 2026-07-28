@@ -1,6 +1,6 @@
 # MichiSonae Production Master Plan (RoadSense / Craterly)
 
-**Version:** 1.2
+**Version:** 1.3
 
 **Prepared:** 28 July 2026
 
@@ -1605,6 +1605,9 @@ Deliver:
   deterministic full/regional rebuilds — **implemented in backend v0.6**;
 - isolated PostgreSQL logical dump/restore drill with migration, count,
   consistency, and RTO verification — **implemented in backend v0.6**;
+- correlation propagation, redacted structured logs, bounded Prometheus
+  metrics, API/worker lifecycle health, graceful shutdown, staging synthetic
+  probes, and incident runbooks — **implemented in backend v0.7**;
 - liveness/readiness separation;
 - public cacheable read contract and snapshot prototype — **implemented in backend v0.4**.
 

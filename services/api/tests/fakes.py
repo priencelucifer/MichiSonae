@@ -40,7 +40,12 @@ class MemoryObservationStore:
     async def ready(self) -> bool:
         return self.is_ready
 
-    async def ingest(self, batch: ObservationBatch) -> IngestionResult:
+    async def ingest(
+        self,
+        batch: ObservationBatch,
+        correlation_id: UUID,
+    ) -> IngestionResult:
+        del correlation_id
         if self.fail_ingestion:
             raise StoreUnavailable("forced failure")
 
@@ -96,6 +101,9 @@ class MemorySnapshotStore:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def ready(self) -> bool:
+        return not self.fail_reads
 
     async def get(
         self,
@@ -168,6 +176,9 @@ class MemorySecurityService:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def ready(self) -> bool:
+        return True
 
     async def register(
         self,

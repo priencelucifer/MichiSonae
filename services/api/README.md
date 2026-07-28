@@ -158,6 +158,39 @@ ID, bounded action/result fields, and counts. See the
 [backup and recovery runbook](../../docs/operations/BACKUP_RESTORE.md) for RPO,
 RTO, isolated restore, and projection recovery procedures.
 
+## Observability and shutdown
+
+The API exposes independent `/health/live`, `/health/startup`,
+`/health/ready`, and `/metrics` endpoints. Readiness verifies every configured
+PostgreSQL pool and the latest migration checksum; liveness never depends on
+PostgreSQL.
+
+Continuous `michi-project` and `michi-snapshot` processes expose the same
+operational endpoints on ports `9101` and `9102`. Their Prometheus labels are
+bounded enums and route templates. They never contain event, installation,
+correlation, region, coordinate, token, IP, or exception-message values.
+
+Staging and production require newline-delimited JSON logs. Correlation IDs
+flow from API requests through outbox and snapshot work, while the formatter
+redacts credentials, anonymous IDs, UUIDs embedded in messages, and precise
+coordinate forms. Raw bodies and observation/snapshot payloads are never
+logged.
+
+SIGINT/SIGTERM stops new claims after the current bounded worker item finishes,
+then marks readiness false and closes the pool within the configured timeout.
+An abnormal kill remains safe through transactional work and expiring leases.
+
+The staging-only synthetic probe verifies anonymous registration, an idempotent
+one-point upload, projection, snapshot publication/read, and revocation:
+
+```powershell
+michi-probe --base-url https://staging-api.example.invalid
+```
+
+It is rejected in production and never uploads a route or trip sequence. See
+the [observability guide](../../docs/operations/OBSERVABILITY.md) and
+[incident runbooks](../../docs/operations/INCIDENTS.md).
+
 ## Local development
 
 Requirements:
@@ -231,6 +264,12 @@ timeouts are configurable with:
 - `MICHI_OBSERVATION_RETENTION_DAYS`
 - `MICHI_MAINTENANCE_BATCH_SIZE`
 - `MICHI_DEAD_LETTER_QUARANTINE_DAYS`
+- `MICHI_LOG_LEVEL`
+- `MICHI_JSON_LOGGING_ENABLED`
+- `MICHI_WORKER_HEALTH_HOST`
+- `MICHI_PROJECTION_HEALTH_PORT`
+- `MICHI_SNAPSHOT_HEALTH_PORT`
+- `MICHI_WORKER_SHUTDOWN_TIMEOUT_SECONDS`
 
 `MICHI_RATE_LIMIT_HASH_SECRET` must be a separately managed secret with at
 least 32 characters in staging/production. Do not commit secrets in `.env`

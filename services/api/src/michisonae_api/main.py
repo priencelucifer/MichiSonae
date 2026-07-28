@@ -1,13 +1,16 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from time import monotonic
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST
 
 from michisonae_api import __version__
 from michisonae_api.models import (
@@ -18,6 +21,11 @@ from michisonae_api.models import (
     ObservationBatchAccepted,
     RefreshCredentialRequest,
     RegionalHazardSnapshot,
+)
+from michisonae_api.observability import (
+    BackendMetrics,
+    configure_json_logging,
+    correlation_scope,
 )
 from michisonae_api.security import (
     AuthenticatedInstallation,
@@ -54,8 +62,12 @@ def create_app(
     observation_store: ObservationStore | None = None,
     snapshot_store: HazardSnapshotStore | None = None,
     security_service: SecurityService | None = None,
+    metrics: BackendMetrics | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
+    if app_settings.json_logging_enabled and app_settings.environment != "test":
+        configure_json_logging(app_settings.log_level)
+    backend_metrics = metrics or BackendMetrics()
     store = observation_store
     if store is None and app_settings.database_url:
         store = PostgresObservationStore(app_settings)
@@ -68,21 +80,29 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        if store is not None:
-            await store.open()
-        if snapshots is not None:
-            await snapshots.open()
-        if security is not None:
-            await security.open()
+        opened: list[Any] = []
         try:
+            for dependency in (store, snapshots, security):
+                if dependency is not None:
+                    await dependency.open()
+                    opened.append(dependency)
+            application.state.started = True
+            backend_metrics.started.labels("api").set(1)
             yield
         finally:
-            if security is not None:
-                await security.close()
-            if snapshots is not None:
-                await snapshots.close()
-            if store is not None:
-                await store.close()
+            application.state.started = False
+            backend_metrics.ready.labels("api").set(0)
+            backend_metrics.started.labels("api").set(0)
+            try:
+                async with asyncio.timeout(app_settings.worker_shutdown_timeout_seconds):
+                    for dependency in reversed(opened):
+                        await dependency.close()
+            except TimeoutError:
+                backend_metrics.observe_error("api", "shutdown_timeout")
+                logger.error(
+                    "api_shutdown_timeout",
+                    extra={"component": "api", "failure_code": "shutdown_timeout"},
+                )
 
     application = FastAPI(
         title="MichiSonae API",
@@ -95,62 +115,98 @@ def create_app(
     application.state.observation_store = store
     application.state.snapshot_store = snapshots
     application.state.security_service = security
+    application.state.metrics = backend_metrics
+    application.state.started = False
 
     @application.middleware("http")
     async def request_guard(request: Request, call_next: Any) -> Response:
+        started_at = monotonic()
         correlation_id = _correlation_id(request.headers.get("x-correlation-id"))
         request.state.correlation_id = correlation_id
-        try:
-            peer_host = None if request.client is None else request.client.host
-            if app_settings.environment == "test" and peer_host == "testclient":
-                peer_host = "127.0.0.1"
-            request.state.client_ip = client_ip(
-                peer_ip=peer_host,
-                forwarded_for=request.headers.get("x-forwarded-for"),
-                trusted_proxy_cidrs=app_settings.trusted_proxy_cidrs,
-            )
-        except ValueError:
-            response: Response = JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "code": "invalid_forwarded_address",
-                    "message": "The request forwarding address is invalid.",
-                },
+        method = _method_label(request.method)
+
+        def finish(response: Response) -> Response:
+            route = _route_label(request)
+            duration_seconds = monotonic() - started_at
+            backend_metrics.observe_http(
+                method=method,
+                route=route,
+                status_code=response.status_code,
+                duration_seconds=duration_seconds,
             )
             response.headers["X-Correlation-ID"] = str(correlation_id)
+            logger.info(
+                "http_request_completed",
+                extra={
+                    "component": "api",
+                    "duration_ms": round(duration_seconds * 1000, 3),
+                    "method": method,
+                    "route": route,
+                    "status_code": response.status_code,
+                },
+            )
             return response
 
-        if request.method in {"POST", "PUT", "PATCH"}:
-            content_type = request.headers.get("content-type", "")
-            if content_type.split(";", 1)[0].strip().lower() != "application/json":
-                response = JSONResponse(
-                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                    content={
-                        "code": "json_content_type_required",
-                        "message": "This endpoint requires application/json.",
+        with correlation_scope(correlation_id):
+            try:
+                peer_host = None if request.client is None else request.client.host
+                if app_settings.environment == "test" and peer_host == "testclient":
+                    peer_host = "127.0.0.1"
+                request.state.client_ip = client_ip(
+                    peer_ip=peer_host,
+                    forwarded_for=request.headers.get("x-forwarded-for"),
+                    trusted_proxy_cidrs=app_settings.trusted_proxy_cidrs,
+                )
+            except ValueError:
+                return finish(
+                    JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content={
+                            "code": "invalid_forwarded_address",
+                            "message": "The request forwarding address is invalid.",
+                        },
+                    )
+                )
+
+            if request.method in {"POST", "PUT", "PATCH"}:
+                content_type = request.headers.get("content-type", "")
+                if content_type.split(";", 1)[0].strip().lower() != "application/json":
+                    return finish(
+                        JSONResponse(
+                            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            content={
+                                "code": "json_content_type_required",
+                                "message": "This endpoint requires application/json.",
+                            },
+                        )
+                    )
+                length_header = request.headers.get("content-length")
+                if length_header is not None:
+                    try:
+                        declared_length = int(length_header)
+                    except ValueError:
+                        declared_length = app_settings.maximum_request_bytes + 1
+                    if declared_length < 0 or declared_length > app_settings.maximum_request_bytes:
+                        return finish(_request_too_large())
+                body = await request.body()
+                if len(body) > app_settings.maximum_request_bytes:
+                    return finish(_request_too_large())
+
+            try:
+                response = await call_next(request)
+            except Exception:
+                route = _route_label(request)
+                backend_metrics.observe_error("api", "unhandled_exception")
+                logger.exception(
+                    "http_request_failed",
+                    extra={
+                        "component": "api",
+                        "method": method,
+                        "route": route,
                     },
                 )
-                response.headers["X-Correlation-ID"] = str(correlation_id)
-                return response
-            length_header = request.headers.get("content-length")
-            if length_header is not None:
-                try:
-                    declared_length = int(length_header)
-                except ValueError:
-                    declared_length = app_settings.maximum_request_bytes + 1
-                if declared_length < 0 or declared_length > app_settings.maximum_request_bytes:
-                    response = _request_too_large()
-                    response.headers["X-Correlation-ID"] = str(correlation_id)
-                    return response
-            body = await request.body()
-            if len(body) > app_settings.maximum_request_bytes:
-                response = _request_too_large()
-                response.headers["X-Correlation-ID"] = str(correlation_id)
-                return response
-
-        response = await call_next(request)
-        response.headers["X-Correlation-ID"] = str(correlation_id)
-        return response
+                raise
+            return finish(response)
 
     @application.get(
         "/health/live",
@@ -160,6 +216,15 @@ def create_app(
     async def liveness() -> dict[str, str]:
         return {"status": "live", "version": __version__}
 
+    @application.get("/health/startup", include_in_schema=False)
+    async def startup(request: Request) -> Any:
+        if not request.app.state.started:
+            return unavailable_response(
+                "The API process is still starting.",
+                code="startup_incomplete",
+            )
+        return {"status": "started", "version": __version__}
+
     @application.get(
         "/health/ready",
         tags=["health"],
@@ -168,11 +233,43 @@ def create_app(
     )
     async def readiness(request: Request) -> Any:
         current_store: ObservationStore | None = request.app.state.observation_store
-        if current_store is None or not await current_store.ready():
+        current_snapshots: HazardSnapshotStore | None = request.app.state.snapshot_store
+        current_security: SecurityService | None = request.app.state.security_service
+        if current_store is None:
             return unavailable_response(
                 "The durable observation database or required schema is unavailable.",
             )
+        dependencies = tuple(
+            dependency
+            for dependency in (
+                current_store,
+                current_snapshots,
+                current_security,
+            )
+            if dependency is not None
+        )
+        ready = all(await asyncio.gather(*(item.ready() for item in dependencies)))
+        backend_metrics.ready.labels("api").set(1 if ready else 0)
+        if not ready:
+            return unavailable_response(
+                "A required database pool, dependency, or schema is unavailable.",
+            )
         return {"status": "ready", "version": __version__}
+
+    @application.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint(request: Request) -> Response:
+        for component, dependency in (
+            ("ingestion", request.app.state.observation_store),
+            ("snapshots", request.app.state.snapshot_store),
+            ("security", request.app.state.security_service),
+        ):
+            pool_stats = getattr(dependency, "pool_stats", None)
+            if callable(pool_stats):
+                backend_metrics.set_pool(component, pool_stats())
+        return Response(
+            content=backend_metrics.render(),
+            media_type=CONTENT_TYPE_LATEST,
+        )
 
     @application.post(
         "/v1/observations:batch",
@@ -202,6 +299,7 @@ def create_app(
             )
         ip_decision = await _rate_limit(
             current_security,
+            backend_metrics,
             scope="ingestion_ip",
             subject=request.state.client_ip,
             limit=app_settings.ingestion_rate_limit_per_minute,
@@ -214,6 +312,7 @@ def create_app(
             return principal
         installation_decision = await _rate_limit(
             current_security,
+            backend_metrics,
             scope="ingestion_installation",
             subject=principal.installation_id,
             limit=app_settings.ingestion_rate_limit_per_minute,
@@ -235,7 +334,10 @@ def create_app(
             )
 
         try:
-            result = await current_store.ingest(batch)
+            result = await current_store.ingest(
+                batch,
+                request.state.correlation_id,
+            )
         except EventIdConflict:
             return JSONResponse(
                 status_code=status.HTTP_409_CONFLICT,
@@ -248,11 +350,17 @@ def create_app(
                 },
             )
         except StoreUnavailable:
+            backend_metrics.observe_error("ingestion", "store_unavailable")
             logger.exception("Durable observation ingestion failed")
             return unavailable_response(
                 "The observation batch was not accepted because durable storage failed.",
             )
 
+        backend_metrics.observe_ingestion(
+            received_count=result.received_count,
+            stored_count=result.stored_count,
+            duplicate_count=result.duplicate_count,
+        )
         return ObservationBatchAccepted(
             received_count=result.received_count,
             stored_count=result.stored_count,
@@ -284,6 +392,7 @@ def create_app(
             )
         rate_response = await _rate_limit(
             current_security,
+            backend_metrics,
             scope="registration_ip",
             subject=request.state.client_ip,
             limit=app_settings.registration_rate_limit_per_hour,
@@ -330,6 +439,7 @@ def create_app(
             )
         rate_response = await _rate_limit(
             current_security,
+            backend_metrics,
             scope="refresh_ip",
             subject=request.state.client_ip,
             limit=app_settings.refresh_rate_limit_per_minute,
@@ -432,6 +542,7 @@ def create_app(
         if current_security is not None:
             rate_response = await _rate_limit(
                 current_security,
+                backend_metrics,
                 scope="public_read_ip",
                 subject=request.state.client_ip,
                 limit=app_settings.public_read_rate_limit_per_minute,
@@ -603,6 +714,7 @@ async def _authenticate_request(
 
 async def _rate_limit(
     security: SecurityService,
+    metrics: BackendMetrics,
     *,
     scope: str,
     subject: str,
@@ -617,11 +729,13 @@ async def _rate_limit(
             window_seconds=window_seconds,
         )
     except SecurityUnavailable:
+        metrics.observe_error("security", "rate_limit_unavailable")
         logger.exception("Atomic rate limit failed")
         return unavailable_response(
             "Abuse protection is temporarily unavailable.",
             code="security_service_unavailable",
         )
+    metrics.observe_rate_limit(scope, decision.allowed)
     if decision.allowed:
         return None
     return JSONResponse(
@@ -728,6 +842,21 @@ def _correlation_id(value: str | None) -> UUID:
         except ValueError:
             pass
     return uuid4()
+
+
+def _method_label(method: str) -> str:
+    normalized = method.upper()
+    if normalized in {"DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"}:
+        return normalized
+    return "OTHER"
+
+
+def _route_label(request: Request) -> str:
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    if isinstance(template, str):
+        return template
+    return "request_guard"
 
 
 app = create_app()

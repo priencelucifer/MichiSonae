@@ -13,6 +13,7 @@ from psycopg import Error as PsycopgError
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from michisonae_api.migration import expected_migration
 from michisonae_api.settings import Settings
 
 INSERT_INSTALLATION_SQL = """
@@ -197,6 +198,14 @@ FROM counted
 CROSS JOIN rate_window
 """
 
+READINESS_SQL = """
+SELECT EXISTS (
+    SELECT 1
+    FROM public.schema_migrations
+    WHERE version = %s AND checksum = %s
+)
+"""
+
 
 class SecurityUnavailable(RuntimeError):
     """Raised when authentication state cannot be used safely."""
@@ -237,6 +246,8 @@ class SecurityService(Protocol):
     async def open(self) -> None: ...
 
     async def close(self) -> None: ...
+
+    async def ready(self) -> bool: ...
 
     async def register(
         self,
@@ -298,6 +309,24 @@ class PostgresSecurityService:
 
     async def close(self) -> None:
         await self._pool.close()
+
+    async def ready(self) -> bool:
+        migration = expected_migration()
+        try:
+            async with self._pool.connection(
+                timeout=self._settings.database_pool_timeout_seconds
+            ) as connection:
+                cursor = await connection.execute(
+                    READINESS_SQL,
+                    (migration.version, migration.checksum),
+                )
+                row = await cursor.fetchone()
+                return bool(row and row[0])
+        except PsycopgError:
+            return False
+
+    def pool_stats(self) -> dict[str, int]:
+        return self._pool.get_stats()
 
     async def register(
         self,

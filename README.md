@@ -52,6 +52,9 @@ The backend foundation exposes:
 - guarded raw-observation retention, audited dead-letter operations,
   deterministic full/regional rebuilds, consistency checks, and a real
   isolated-database restore drill
+- correlated redacted JSON logs, bounded Prometheus metrics, independent
+  API/worker health states, graceful worker shutdown, staging probes, alerts,
+  and incident runbooks
 
 The endpoint returns `202` only after the database transaction commits.
 

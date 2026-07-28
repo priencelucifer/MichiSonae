@@ -1,0 +1,64 @@
+groups:
+  - name: michisonae-backend
+    rules:
+      - alert: MichiSonaeComponentNotReady
+        expr: michisonae_process_ready == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MichiSonae component is not ready"
+          runbook: "docs/operations/INCIDENTS.md#database-or-schema-failure"
+
+      - alert: MichiSonaeProjectionQueueLag
+        expr: michisonae_queue_oldest_pending_seconds{queue="projection"} > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Projection queue oldest item exceeds five minutes"
+          runbook: "docs/operations/INCIDENTS.md#queue-lag-or-dead-letters"
+
+      - alert: MichiSonaeSnapshotQueueLag
+        expr: michisonae_queue_oldest_pending_seconds{queue="snapshot"} > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Snapshot queue oldest item exceeds five minutes"
+          runbook: "docs/operations/INCIDENTS.md#queue-lag-or-dead-letters"
+
+      - alert: MichiSonaeDeadLettersPresent
+        expr: michisonae_queue_dead_letters > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MichiSonae has dead-letter work"
+          runbook: "docs/operations/INCIDENTS.md#queue-lag-or-dead-letters"
+
+      - alert: MichiSonaeApiServerErrors
+        expr: |
+          (
+            sum(rate(michisonae_http_requests_total{status_class="5xx"}[5m]))
+            /
+            clamp_min(sum(rate(michisonae_http_requests_total[5m])), 0.001)
+          ) > 0.02
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MichiSonae API 5xx ratio exceeds two percent"
+          runbook: "docs/operations/INCIDENTS.md#database-or-schema-failure"
+
+      - alert: MichiSonaeDatabasePoolWaiting
+        expr: |
+          max by (component) (
+            michisonae_database_pool_connections{state="waiting"}
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MichiSonae database pool has sustained waiters"
+          runbook: "docs/operations/INCIDENTS.md#database-or-schema-failure"
