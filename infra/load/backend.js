@@ -110,10 +110,10 @@ function observationBatch(installationId, eventId) {
   };
 }
 
-function ingest(data, eventId) {
+function ingestBatch(data, batch) {
   const response = http.post(
     `${baseUrl}/v1/observations:batch`,
-    JSON.stringify(observationBatch(data.installationId, eventId)),
+    JSON.stringify(batch),
     {
       headers: {
         "Content-Type": "application/json",
@@ -135,18 +135,19 @@ function ingest(data, eventId) {
 }
 
 export function alphaIngest(data) {
-  ingest(data, uuid());
+  ingestBatch(data, observationBatch(data.installationId, uuid()));
   sleep(0.2);
 }
 
 export function commuteSpike(data) {
-  ingest(data, uuid());
+  ingestBatch(data, observationBatch(data.installationId, uuid()));
 }
 
 export function duplicateRetry(data) {
   const eventId = uuid();
-  const first = ingest(data, eventId);
-  const second = ingest(data, eventId);
+  const batch = observationBatch(data.installationId, eventId);
+  const first = ingestBatch(data, batch);
+  const second = ingestBatch(data, batch);
   check(second, {
     "retry is classified as duplicate": (result) =>
       first.status === 202 &&

@@ -280,6 +280,7 @@ jobs:
       - name: Run invited-alpha and commute-spike gate
         run: |
           docker run --rm --network host \
+            --user "$(id -u):$(id -g)" \
             --env BASE_URL=http://127.0.0.1:8000 \
             --volume "$GITHUB_WORKSPACE/infra/load:/scripts:ro" \
             --volume "$GITHUB_WORKSPACE/load-results:/results" \
