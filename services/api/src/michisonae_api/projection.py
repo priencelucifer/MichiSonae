@@ -255,6 +255,22 @@ WHERE id = %s
 RETURNING id
 """
 
+MARK_REGION_DIRTY_SQL = """
+INSERT INTO public.regional_snapshot_work (region_id)
+VALUES (%s)
+ON CONFLICT (region_id) DO UPDATE
+SET generation = regional_snapshot_work.generation + 1,
+    dirty_at = clock_timestamp(),
+    next_attempt_at = clock_timestamp(),
+    delivery_attempts = CASE
+        WHEN regional_snapshot_work.dead_lettered_at IS NOT NULL THEN 0
+        ELSE regional_snapshot_work.delivery_attempts
+    END,
+    last_error = NULL,
+    dead_lettered_at = NULL,
+    dead_letter_reason = NULL
+"""
+
 RECORD_FAILURE_SQL = """
 UPDATE public.observation_outbox
 SET claimed_by = NULL,
@@ -563,6 +579,14 @@ class PostgresProjectionWorker:
                         await connection.execute(
                             REFRESH_PROJECTION_SQL,
                             (observation.cluster_key, PROJECTION_POLICY_VERSION),
+                        )
+                        region_precision = self._settings.snapshot_region_geohash_precision
+                        await connection.execute(
+                            MARK_REGION_DIRTY_SQL,
+                            (
+                                f"gh{region_precision}:"
+                                f"{observation.spatial_cell[:region_precision]}",
+                            ),
                         )
 
                     acknowledge_cursor = await connection.execute(

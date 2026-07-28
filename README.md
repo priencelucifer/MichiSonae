@@ -44,6 +44,8 @@ The backend foundation exposes:
   `event_id` idempotency and a transactional outbox
 - a leased, retry-safe projection worker with distinct-installation consensus,
   dead letters and deterministic rebuilds
+- content-addressed global regional snapshots and an ETag-enabled public read
+  endpoint designed for CDN fan-out
 
 The endpoint returns `202` only after the database transaction commits.
 

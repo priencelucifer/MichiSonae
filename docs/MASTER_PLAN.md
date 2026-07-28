@@ -1602,7 +1602,7 @@ Deliver:
 - road-segment-aware projection schema;
 - retention partitions/jobs;
 - liveness/readiness separation;
-- public cacheable read contract and snapshot prototype.
+- public cacheable read contract and snapshot prototype — **implemented in backend v0.4**.
 
 Exit gate:
 

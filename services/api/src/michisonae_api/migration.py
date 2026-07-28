@@ -9,6 +9,7 @@ import psycopg
 MIGRATION_FILES = (
     "0001_durable_observation_ingestion.sql",
     "0002_hazard_projection_worker.sql",
+    "0003_regional_hazard_snapshots.sql",
 )
 MIGRATION_LOCK_ID = 4_885_343_490_975_695_649
 

@@ -63,6 +63,32 @@ Rebuild takes an exclusive PostgreSQL advisory lock, clears only derived
 projection tables, resets outbox delivery state, and drains retained source
 observations. It does not delete accepted observations.
 
+## Regional snapshot publisher
+
+`michi-snapshot` converts current `provisional` and `confirmed` projections
+into compact, immutable regional snapshots. Regions use a global geohash key
+such as `gh5:wh9hx`; the precision is configurable but must be consistent
+between publishers and API replicas.
+
+```powershell
+.\.venv\Scripts\michi-snapshot --once
+.\.venv\Scripts\michi-snapshot
+.\.venv\Scripts\michi-snapshot --status
+.\.venv\Scripts\michi-snapshot --seed
+```
+
+Snapshots are content-addressed. Regenerating identical public content does not
+create another version. Public payloads contain aggregate hazard locations and
+confidence only; installation IDs and raw observations are never read by the
+public endpoint.
+
+`GET /v1/regions/{region_id}/hazards` returns the current snapshot with `ETag`,
+`Last-Modified`, public `Cache-Control`, and an explicit freshness header. Send
+`If-None-Match` for `304 Not Modified`, or add `?version=<sha256>` for an
+immutable version suitable for a CDN. A region with no published snapshot
+returns an empty list with `coverage.status=unknown`; it does not claim the
+roads are hazard-free.
+
 ## Local development
 
 Requirements:
@@ -110,5 +136,15 @@ timeouts are configurable with:
 - `MICHI_PROJECTION_RETRY_MAX_SECONDS`
 - `MICHI_PROJECTION_POLL_SECONDS`
 - `MICHI_PROJECTION_GEOHASH_PRECISION`
+- `MICHI_SNAPSHOT_REGION_GEOHASH_PRECISION`
+- `MICHI_SNAPSHOT_BATCH_SIZE`
+- `MICHI_SNAPSHOT_LEASE_SECONDS`
+- `MICHI_SNAPSHOT_MAX_ATTEMPTS`
+- `MICHI_SNAPSHOT_RETRY_BASE_SECONDS`
+- `MICHI_SNAPSHOT_RETRY_MAX_SECONDS`
+- `MICHI_SNAPSHOT_POLL_SECONDS`
+- `MICHI_SNAPSHOT_CACHE_MAX_AGE_SECONDS`
+- `MICHI_SNAPSHOT_STALE_WHILE_REVALIDATE_SECONDS`
+- `MICHI_SNAPSHOT_STALE_AFTER_SECONDS`
 
 Do not commit secrets in `.env` files.
