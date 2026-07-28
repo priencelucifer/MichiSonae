@@ -13,7 +13,7 @@ emergency mesh are explicitly deferred future work.
 | Path | Responsibility | Current state |
 |---|---|---|
 | `apps/android` | Native Kotlin/Jetpack Compose driver application | Architecture scaffold |
-| `services/api` | FastAPI public API and durable ingestion boundary | Initial runnable health/guard slice |
+| `services/api` | FastAPI public API and durable ingestion boundary | PostgreSQL transaction/outbox ingestion |
 | `firmware/roadsense` | ESP32 RoadSense accessory firmware | Safe no-network scaffold |
 | `hardware` | Electrical, mechanical, BOM, manufacturing and validation records | Documentation scaffold |
 | `contracts` | Versioned API, event and device protocol contracts | Initial observation and frame schemas |
@@ -34,17 +34,16 @@ emergency mesh are explicitly deferred future work.
   prompts or model responses.
 - LoRa mesh and crash/SOS are future work, not launch dependencies.
 
-## First runnable component
+## Server foundation
 
 The backend foundation exposes:
 
 - `GET /health/live`
 - `GET /health/ready`
-- a contract-validating observation batch endpoint that refuses to acknowledge
-  data until durable storage is configured
+- `POST /v1/observations:batch` with atomic PostgreSQL/PostGIS storage,
+  `event_id` idempotency and a transactional outbox
 
-That refusal is intentional: MichiSonae must never report an observation as
-accepted before it is durable.
+The endpoint returns `202` only after the database transaction commits.
 
 ## Development
 

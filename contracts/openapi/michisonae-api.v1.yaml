@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MichiSonae API
-  version: 0.1.0
+  version: 0.2.0
 paths:
   /health/live:
     get:
@@ -39,8 +39,27 @@ paths:
             schema:
               $ref: "#/components/schemas/ObservationBatch"
       responses:
+        "202":
+          description: >-
+            Every new observation and its outbox event committed atomically.
+            Previously stored identical event_id values are reported as
+            duplicates and do not create another business effect.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObservationBatchAccepted"
+        "409":
+          description: >-
+            An event_id already exists with different content. The entire
+            batch is rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
         "503":
-          description: Durable ingestion is not configured in the initial slice.
+          description: >-
+            The batch was not accepted because the durable store or required
+            schema is unavailable.
           content:
             application/json:
               schema:
@@ -82,3 +101,26 @@ components:
           maxItems: 100
           items:
             $ref: "../events/road-observation.v1.schema.json"
+    ObservationBatchAccepted:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - received_count
+        - stored_count
+        - duplicate_count
+      properties:
+        schema_version:
+          const: "1.0"
+        received_count:
+          type: integer
+          minimum: 1
+          maximum: 100
+        stored_count:
+          type: integer
+          minimum: 0
+          maximum: 100
+        duplicate_count:
+          type: integer
+          minimum: 0
+          maximum: 100

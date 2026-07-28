@@ -19,5 +19,6 @@ pass.
 - centralized metrics, logs, traces and mobile crash reporting;
 - managed secrets and backup/PITR.
 
-No production environment is defined in the initial commit because provider,
-region and data-residency decisions are still open.
+Local PostgreSQL/PostGIS and controlled migrations are now defined. No
+production environment is provisioned yet because provider, region,
+data-residency, backup and incident-ownership decisions are still open.
