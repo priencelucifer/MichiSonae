@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -38,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -116,21 +119,57 @@ internal fun MichiSonaeApp() {
         )
 
         isSettingsOpen -> SettingsScreen(
-            pendingObservationCount = remember {
-                runCatching {
-                    OfflineObservationQueue(context).pendingCount()
-                }.getOrDefault(0)
+            backendStatus = remember {
+                val snapshot = HazardSnapshotCache(context).read()
+                val latestSync = ObservationSyncStatus(context).latest()
+                val now = System.currentTimeMillis()
+                backendStatus(
+                    pendingUploadCount = runCatching {
+                        OfflineObservationQueue(context).pendingCount()
+                    }.getOrDefault(0),
+                    hasNetwork = hasInternetConnection(context),
+                    lastSyncFailureAtMillis = now.takeIf {
+                        latestSync == LatestSyncStatus.RETRYING ||
+                            latestSync == LatestSyncStatus.REJECTED
+                    },
+                    hasCachedSnapshot = snapshot != null,
+                    snapshotGeneratedAtMillis = snapshot?.generatedAtMillis,
+                    nowMillis = now,
+                    backendConfigured = BuildConfig.MICHI_API_BASE_URL.isNotBlank(),
+                )
             },
-            onDeleteAllData = {
+            onDeleteAllData = { onComplete ->
                 context.stopService(Intent(context, DrivingMonitorService::class.java))
-                runCatching {
-                    OfflineObservationQueue(context).clearAll()
-                    preferences.clearAll()
-                }.isSuccess.also { deleted ->
-                    if (deleted) {
-                        vehicleProfile = null
-                        hasConsent = false
-                        isSettingsOpen = false
+                thread(name = "michisonae-data-deletion") {
+                    var credentialsToRevoke: AnonymousCredentials? = null
+                    val deleted = runCatching {
+                        CredentialOperationCoordinator.runExclusive {
+                            ObservationSyncScheduler.cancel(context)
+                            preferences.clearAll()
+                            val credentialStore = EncryptedCredentialStore(context)
+                            credentialsToRevoke = credentialStore.load()
+                            credentialStore.clear()
+                            OfflineObservationQueue(context).clearAll()
+                            HazardSnapshotCache(context).clear()
+                        }
+                    }.isSuccess
+                    val credentials = credentialsToRevoke
+                    val baseUrl = BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)
+                    if (credentials != null && baseUrl != null) {
+                        runCatching {
+                            revokeCredentialsBestEffort(
+                                MichiSonaeApi(baseUrl),
+                                credentials,
+                            )
+                        }
+                    }
+                    context.mainExecutor.execute {
+                        if (deleted) {
+                            vehicleProfile = null
+                            hasConsent = false
+                            isSettingsOpen = false
+                        }
+                        onComplete(deleted)
                     }
                 }
             },
@@ -184,6 +223,13 @@ private fun requiredDrivingPermissions(): Array<String> = buildList {
         add(Manifest.permission.POST_NOTIFICATIONS)
     }
 }.toTypedArray()
+
+private fun hasInternetConnection(context: Context): Boolean {
+    val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    val network = connectivity.activeNetwork ?: return false
+    return connectivity.getNetworkCapabilities(network)
+        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+}
 
 @Composable
 private fun Page(content: @Composable () -> Unit) {
@@ -443,6 +489,7 @@ private fun VehicleDemoScreen(
 ) {
     var manualFuelPercent by rememberSaveable { mutableStateOf("") }
     var showGauges by rememberSaveable { mutableStateOf(false) }
+    val connectionState = remember { Elm327ConnectionSimulator.connect() }
     val fuelReading = checkNotNull(
         Elm327Parser.reading(
             Elm327Command.FUEL_LEVEL,
@@ -457,20 +504,7 @@ private fun VehicleDemoScreen(
         source = if (usesManualValue) FuelLevelSource.MANUAL else FuelLevelSource.OBD,
     )
     val advice = FuelCoverageGuardian.evaluate(
-        estimate = estimate,
-        stationsAhead = listOf(
-            FuelStationAhead(
-                name = "Upcoming fuel pump",
-                distanceAheadKm = estimate.conservativeKm * 0.25,
-                isOpen = true,
-            ),
-            FuelStationAhead(
-                name = "Following fuel pump",
-                distanceAheadKm = estimate.conservativeKm * 1.25,
-                isOpen = null,
-            ),
-        ),
-        remainingRouteKm = estimate.conservativeKm * 2,
+        FuelRouteScenarioSimulator.criticalGap(estimate),
     )
     val diagnosticCode = Elm327Parser.troubleCodes(
         Elm327Simulator.response(Elm327Command.READ_TROUBLE_CODES),
@@ -483,6 +517,7 @@ private fun VehicleDemoScreen(
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("Vehicle demo", style = MaterialTheme.typography.headlineMedium)
             Text("Simulated cheap ELM327 adapter. Every command is read-only.")
+            Text(connectionState.statusText)
             CapabilityCard(
                 name = "Diagnostic $diagnosticCode",
                 detail = "${finding.title}. ${finding.safeAction}",
@@ -633,19 +668,22 @@ private fun AssistanceScreen(onBack: () -> Unit) {
 
 @Composable
 private fun SettingsScreen(
-    pendingObservationCount: Int,
-    onDeleteAllData: () -> Boolean,
+    backendStatus: BackendStatus,
+    onDeleteAllData: ((Boolean) -> Unit) -> Unit,
     onBack: () -> Unit,
 ) {
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
     var deletionFailed by rememberSaveable { mutableStateOf(false) }
+    var deletionInProgress by rememberSaveable { mutableStateOf(false) }
 
     Page {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("Settings and privacy", style = MaterialTheme.typography.headlineMedium)
             Text("Phone-only detection is always active after location permission is granted.")
             Text("Warnings use English voice, sound, vibration, and temporary music pause.")
-            Text("$pendingObservationCount road observations are waiting for durable upload.")
+            Text(backendStatus.connectionLabel)
+            Text(backendStatus.uploadLabel)
+            Text(backendStatus.snapshotLabel)
             Text(
                 "No account, trip history, raw microphone audio, raw OBD stream, AI " +
                     "conversation, or sensor-tuning trace is stored on the server.",
@@ -656,8 +694,8 @@ private fun SettingsScreen(
                     onCheckedChange = { confirmDelete = it },
                 )
                 Text(
-                    "I understand this deletes the vehicle profile, anonymous local identity, " +
-                        "consent, and queued road observations.",
+                    "I understand this deletes the vehicle profile, anonymous identities and " +
+                        "credentials, consent, queued road reports, and saved hazard data.",
                     modifier = Modifier
                         .padding(top = 12.dp)
                         .weight(1f),
@@ -665,12 +703,16 @@ private fun SettingsScreen(
             }
             Button(
                 onClick = {
-                    deletionFailed = !onDeleteAllData()
+                    deletionInProgress = true
+                    onDeleteAllData { deleted ->
+                        deletionInProgress = false
+                        deletionFailed = !deleted
+                    }
                 },
-                enabled = confirmDelete,
+                enabled = confirmDelete && !deletionInProgress,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Delete all local data")
+                Text(if (deletionInProgress) "Deleting..." else "Delete all local data")
             }
             if (deletionFailed) {
                 Text(

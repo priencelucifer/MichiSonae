@@ -20,6 +20,12 @@ internal enum class UploadOutcome {
     REJECTED,
 }
 
+internal enum class RevocationOutcome {
+    REVOKED,
+    RETRY,
+    REJECTED,
+}
+
 internal fun acknowledgedEventIds(
     outcome: UploadOutcome,
     submittedEventIds: Set<String>,
@@ -33,9 +39,14 @@ internal fun classifyUpload(
     duplicateCount: Int? = null,
 ): UploadOutcome = when {
     statusCode == 202 &&
-        receivedCount == submittedCount &&
+        submittedCount in 1..100 &&
+        receivedCount != null &&
         storedCount != null &&
         duplicateCount != null &&
+        receivedCount == submittedCount &&
+        receivedCount in 0..submittedCount &&
+        storedCount in 0..submittedCount &&
+        duplicateCount in 0..submittedCount &&
         storedCount + duplicateCount == receivedCount -> UploadOutcome.ACCEPTED
 
     statusCode == 401 -> UploadOutcome.AUTH_EXPIRED
@@ -43,16 +54,35 @@ internal fun classifyUpload(
     else -> UploadOutcome.REJECTED
 }
 
-internal class MichiSonaeApi(baseUrl: String) {
-    private val baseUrl = baseUrl.trimEnd('/').also {
-        val uri = URI(it)
-        require(
-            uri.scheme == "https" ||
-                (uri.scheme == "http" && uri.host in setOf("localhost", "127.0.0.1")),
-        ) {
-            "The API must use HTTPS outside local development"
-        }
+internal fun classifyRevocation(statusCode: Int): RevocationOutcome = when {
+    statusCode == 204 -> RevocationOutcome.REVOKED
+    statusCode == 408 || statusCode == 429 || statusCode >= 500 -> RevocationOutcome.RETRY
+    else -> RevocationOutcome.REJECTED
+}
+
+internal fun validatedApiBaseUrl(value: String): String {
+    val uri = runCatching { URI(value.trim()) }.getOrElse {
+        throw IllegalArgumentException("The API URL is invalid", it)
     }
+    val scheme = uri.scheme?.lowercase()
+    val host = uri.host?.lowercase()
+    require(
+        host != null &&
+            (scheme == "https" ||
+                (scheme == "http" && host in setOf("localhost", "127.0.0.1"))) &&
+            uri.rawUserInfo == null &&
+            uri.rawQuery == null &&
+            uri.rawFragment == null &&
+            (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/") &&
+            (uri.port == -1 || uri.port in 1..65_535),
+    ) {
+        "The API URL must be a clean HTTPS origin outside local development"
+    }
+    return URI(scheme, null, host, uri.port, null, null, null).toASCIIString()
+}
+
+internal class MichiSonaeApi(baseUrl: String) {
+    private val baseUrl = validatedApiBaseUrl(baseUrl)
 
     fun register(): AnonymousCredentials = credentialsRequest(
         path = "/v1/installations:register",
@@ -83,16 +113,18 @@ internal class MichiSonaeApi(baseUrl: String) {
                 RoadObservationDraft.batchJson(credentials.installationId, observations),
             )
             val response = if (status == 202) {
-                connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+                runCatching {
+                    connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+                }.getOrNull()
             } else {
                 null
             }
             classifyUpload(
                 statusCode = status,
                 submittedCount = observations.size,
-                receivedCount = response?.optInt("received_count"),
-                storedCount = response?.optInt("stored_count"),
-                duplicateCount = response?.optInt("duplicate_count"),
+                receivedCount = response.strictInt("received_count"),
+                storedCount = response.strictInt("stored_count"),
+                duplicateCount = response.strictInt("duplicate_count"),
             )
         } finally {
             connection.disconnect()
@@ -111,6 +143,21 @@ internal class MichiSonaeApi(baseUrl: String) {
             outcome = outcome,
         )
         return outcome
+    }
+
+    fun revoke(accessToken: String): RevocationOutcome {
+        require(accessToken.isNotBlank())
+        val connection = open(
+            path = "/v1/installations/current",
+            method = "DELETE",
+        ).apply {
+            setRequestProperty("Authorization", "Bearer $accessToken")
+        }
+        return try {
+            classifyRevocation(connection.responseCode)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun credentialsRequest(
@@ -137,14 +184,17 @@ internal class MichiSonaeApi(baseUrl: String) {
         }
     }
 
-    private fun open(path: String): HttpURLConnection =
+    private fun open(
+        path: String,
+        method: String = "POST",
+    ): HttpURLConnection =
         (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
+            requestMethod = method
             connectTimeout = 10_000
             readTimeout = 15_000
-            doOutput = true
+            doOutput = method == "POST"
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("Content-Type", "application/json")
+            if (doOutput) setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Cache-Control", "no-store")
         }
 
@@ -152,6 +202,8 @@ internal class MichiSonaeApi(baseUrl: String) {
         outputStream.bufferedWriter().use { it.write(body) }
         return responseCode
     }
+
+    private fun JSONObject?.strictInt(name: String): Int? = this?.opt(name) as? Int
 }
 
 internal class ApiUnavailable(val statusCode: Int) :

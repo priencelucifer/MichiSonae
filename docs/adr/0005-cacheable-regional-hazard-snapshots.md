@@ -42,6 +42,9 @@ empty result must not be presented as proof that a road is safe.
 
 ## Consequences
 
+- Android derives the coarse geohash region locally, atomically replaces only
+  validated snapshots, and retains the last valid cache on network or parse
+  failure. It does not upload ordinary location samples to read hazards.
 - Repeated driver reads never query raw observations or contributor identities.
 - CDN fan-out can serve large read concurrency without proportional PostgreSQL
   load.

@@ -3,6 +3,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val apiBaseUrlLiteral = providers.gradleProperty("MICHI_API_BASE_URL")
+    .orElse("")
+    .get()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\r", "\\r")
+    .replace("\n", "\\n")
+    .let { "\"$it\"" }
+
 android {
     namespace = "io.github.priencelucifer.michisonae"
     compileSdk = 36
@@ -15,6 +24,7 @@ android {
         versionName = "0.1.0-dev"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "MICHI_API_BASE_URL", apiBaseUrlLiteral)
     }
 
     buildFeatures {
