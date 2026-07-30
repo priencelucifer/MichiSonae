@@ -19,12 +19,16 @@ class Elm327Test {
     fun parsesStandardLiveValues() {
         assertEquals(
             1726.0,
-            Elm327Parser.reading(Elm327Command.ENGINE_RPM, "41 0C 1A F8\r>")?.value,
+            checkNotNull(
+                Elm327Parser.reading(Elm327Command.ENGINE_RPM, "41 0C 1A F8\r>"),
+            ).value,
             0.0,
         )
         assertEquals(
             40.0,
-            Elm327Parser.reading(Elm327Command.VEHICLE_SPEED, "41 0D 28\r>")?.value,
+            checkNotNull(
+                Elm327Parser.reading(Elm327Command.VEHICLE_SPEED, "41 0D 28\r>"),
+            ).value,
             0.0,
         )
     }
