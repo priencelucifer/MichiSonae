@@ -26,6 +26,7 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
     private val storageExecutor = Executors.newSingleThreadExecutor()
     private val networkExecutor = Executors.newSingleThreadExecutor()
     private val publicHazardWarningGate = PublicHazardWarningGate()
+    private val snapshotRefreshGate = RegionalSnapshotRefreshGate()
     private lateinit var warningPlayer: DriverWarningPlayer
     private lateinit var observationQueue: OfflineObservationQueue
     private lateinit var sensorManager: SensorManager
@@ -37,8 +38,6 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
     private var drivingState = DrivingState.IDLE
     private var lastLocation: Location? = null
     private var lastWarningAt = Long.MIN_VALUE
-    private var lastSnapshotRegion: String? = null
-    private var lastSnapshotRefreshAt = Long.MIN_VALUE
 
     override fun onCreate() {
         super.onCreate()
@@ -175,18 +174,15 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         val snapshots = nearbyHazards ?: return
         val region = regionalHazardId(location.latitude, location.longitude)
         val now = SystemClock.elapsedRealtime()
-        if (
-            region == lastSnapshotRegion &&
-            lastSnapshotRefreshAt != Long.MIN_VALUE &&
-            now - lastSnapshotRefreshAt < SNAPSHOT_REFRESH_INTERVAL_MILLIS
-        ) {
-            return
-        }
-        lastSnapshotRegion = region
-        lastSnapshotRefreshAt = now
+        if (!snapshotRefreshGate.shouldRefresh(region, now)) return
         networkExecutor.execute {
             val refreshed = snapshots.refresh(location.latitude, location.longitude).snapshot
-            if (refreshed?.regionId == region) cachedHazards = refreshed
+            if (
+                snapshotRefreshGate.isCurrent(region) &&
+                refreshed?.regionId == region
+            ) {
+                cachedHazards = refreshed
+            }
         }
     }
 
@@ -241,6 +237,5 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         const val NOTIFICATION_ID = 1001
         const val LOCATION_INTERVAL_MILLIS = 1_000L
         const val WARNING_COOLDOWN_MILLIS = 8_000L
-        const val SNAPSHOT_REFRESH_INTERVAL_MILLIS = 15 * 60 * 1_000L
     }
 }

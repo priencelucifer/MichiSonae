@@ -188,6 +188,26 @@ internal enum class LocalRevocationResult {
     NOTHING_TO_REVOKE,
 }
 
+internal fun revokeCredentialsBestEffort(
+    api: MichiSonaeApi,
+    credentials: AnonymousCredentials,
+    now: Instant = Instant.now(),
+): LocalRevocationResult {
+    val usable = if (
+        revocationAccessAction(credentials, now) == RevocationAccessAction.REFRESH
+    ) {
+        runCatching { api.refresh(credentials.refreshToken) }.getOrDefault(credentials)
+    } else {
+        credentials
+    }
+    val remote = runCatching { api.revoke(usable.accessToken) }.getOrNull()
+    return if (remote == RevocationOutcome.REVOKED) {
+        LocalRevocationResult.CONFIRMED
+    } else {
+        LocalRevocationResult.LOCAL_ONLY
+    }
+}
+
 internal class AnonymousCredentialManager(
     private val api: MichiSonaeApi,
     private val store: EncryptedCredentialStore,
@@ -215,28 +235,8 @@ internal class AnonymousCredentialManager(
         CredentialOperationCoordinator.runExclusive {
             val current = store.load()
                 ?: return@runExclusive LocalRevocationResult.NOTHING_TO_REVOKE
-            val usable = if (
-                revocationAccessAction(current, clock.instant()) == RevocationAccessAction.REFRESH
-            ) {
-                try {
-                    api.refresh(current.refreshToken)
-                } catch (_: Exception) {
-                    current
-                }
-            } else {
-                current
-            }
-            val remote = try {
-                api.revoke(usable.accessToken)
-            } catch (_: Exception) {
-                null
-            }
             store.clear()
-            if (remote == RevocationOutcome.REVOKED) {
-                LocalRevocationResult.CONFIRMED
-            } else {
-                LocalRevocationResult.LOCAL_ONLY
-            }
+            revokeCredentialsBestEffort(api, current, clock.instant())
         }
 
     private fun credentialsLocked(): AnonymousCredentials {

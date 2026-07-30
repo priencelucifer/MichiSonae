@@ -141,27 +141,30 @@ internal fun MichiSonaeApp() {
             onDeleteAllData = { onComplete ->
                 context.stopService(Intent(context, DrivingMonitorService::class.java))
                 thread(name = "michisonae-data-deletion") {
+                    var credentialsToRevoke: AnonymousCredentials? = null
                     val deleted = runCatching {
                         CredentialOperationCoordinator.runExclusive {
                             ObservationSyncScheduler.cancel(context)
                             preferences.clearAll()
                             val credentialStore = EncryptedCredentialStore(context)
-                            BuildConfig.MICHI_API_BASE_URL
-                                .takeIf(String::isNotBlank)
-                                ?.let { baseUrl ->
-                                    runCatching {
-                                        AnonymousCredentialManager(
-                                            api = MichiSonaeApi(baseUrl),
-                                            store = credentialStore,
-                                            credentialCreationAllowed = { false },
-                                        ).revokeAndDeleteLocally()
-                                    }
-                                }
+                            credentialsToRevoke = credentialStore.load()
                             credentialStore.clear()
                             OfflineObservationQueue(context).clearAll()
                             HazardSnapshotCache(context).clear()
                         }
                     }.isSuccess
+                    if (deleted) {
+                        val credentials = credentialsToRevoke
+                        val baseUrl = BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)
+                        if (credentials != null && baseUrl != null) {
+                            runCatching {
+                                revokeCredentialsBestEffort(
+                                    MichiSonaeApi(baseUrl),
+                                    credentials,
+                                )
+                            }
+                        }
+                    }
                     context.mainExecutor.execute {
                         if (deleted) {
                             vehicleProfile = null

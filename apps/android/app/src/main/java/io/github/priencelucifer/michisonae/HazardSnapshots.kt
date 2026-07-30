@@ -139,6 +139,43 @@ internal fun regionalHazardId(
     return "gh$precision:$cell"
 }
 
+internal class RegionalSnapshotRefreshGate(
+    private val refreshIntervalMillis: Long = 15 * 60 * 1_000L,
+    private val maxTrackedRegions: Int = 8,
+) {
+    private val lastRefreshByRegion = LinkedHashMap<String, Long>()
+
+    @Volatile
+    private var currentRegion: String? = null
+
+    init {
+        require(refreshIntervalMillis > 0)
+        require(maxTrackedRegions > 0)
+    }
+
+    @Synchronized
+    fun shouldRefresh(regionId: String, elapsedRealtimeMillis: Long): Boolean {
+        require(regionId.isNotBlank())
+        require(elapsedRealtimeMillis >= 0)
+        currentRegion = regionId
+        val previous = lastRefreshByRegion[regionId]
+        if (
+            previous != null &&
+            elapsedRealtimeMillis >= previous &&
+            elapsedRealtimeMillis - previous < refreshIntervalMillis
+        ) {
+            return false
+        }
+        lastRefreshByRegion[regionId] = elapsedRealtimeMillis
+        while (lastRefreshByRegion.size > maxTrackedRegions) {
+            lastRefreshByRegion.remove(lastRefreshByRegion.keys.first())
+        }
+        return true
+    }
+
+    fun isCurrent(regionId: String): Boolean = currentRegion == regionId
+}
+
 internal sealed interface HazardSnapshotDownload {
     data object NotModified : HazardSnapshotDownload
 

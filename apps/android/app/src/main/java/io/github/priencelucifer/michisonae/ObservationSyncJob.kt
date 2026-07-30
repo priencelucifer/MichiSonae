@@ -108,12 +108,16 @@ internal object ObservationSyncScheduler {
 internal class ObservationUploadJobService : JobService() {
     private val executor = Executors.newSingleThreadExecutor()
     private var running: Future<*>? = null
+    @Volatile
+    private var invocationGeneration = 0
 
     override fun onStartJob(params: JobParameters): Boolean {
         val baseUrl = ObservationSyncScheduler.configuredBaseUrl(this) ?: return false
+        val invocation = ++invocationGeneration
         running = executor.submit {
             val queue = OfflineObservationQueue(this)
             val status = ObservationSyncStatus(this)
+            var latestStatus = LatestSyncStatus.RETRYING
             val retry = try {
                 val outcome = AnonymousCredentialManager(
                     api = MichiSonaeApi(baseUrl),
@@ -122,27 +126,31 @@ internal class ObservationUploadJobService : JobService() {
                         AppPreferences(this).hasAcceptedPrivacy()
                     },
                 ).uploadPending(queue)
-                runCatching { status.record(latestSyncStatus(outcome)) }
+                latestStatus = latestSyncStatus(outcome)
                 shouldRetrySync(outcome, queue.pendingCount() > 0)
             } catch (_: CredentialCreationDisabled) {
-                runCatching { status.record(LatestSyncStatus.PAUSED) }
+                latestStatus = LatestSyncStatus.PAUSED
                 false
             } catch (_: Exception) {
-                runCatching { status.record(LatestSyncStatus.RETRYING) }
                 true
             }
-            jobFinished(params, retry)
+            if (invocationGeneration == invocation) {
+                runCatching { status.record(latestStatus) }
+                jobFinished(params, retry)
+            }
         }
         return true
     }
 
     override fun onStopJob(params: JobParameters): Boolean {
+        invocationGeneration += 1
         running?.cancel(true)
         running = null
         return true
     }
 
     override fun onDestroy() {
+        invocationGeneration += 1
         running?.cancel(true)
         executor.shutdownNow()
         super.onDestroy()

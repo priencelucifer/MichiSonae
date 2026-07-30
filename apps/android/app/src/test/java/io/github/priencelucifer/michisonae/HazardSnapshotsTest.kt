@@ -53,4 +53,19 @@ class HazardSnapshotsTest {
             )
         }
     }
+
+    @Test
+    fun alternatingBoundaryRegionsAreThrottledAndOnlyCurrentRegionApplies() {
+        val gate = RegionalSnapshotRefreshGate(
+            refreshIntervalMillis = 60_000,
+            maxTrackedRegions = 2,
+        )
+
+        assertEquals(true, gate.shouldRefresh("gh5:aaaaa", 1_000))
+        assertEquals(true, gate.shouldRefresh("gh5:bbbbb", 2_000))
+        assertEquals(false, gate.shouldRefresh("gh5:aaaaa", 3_000))
+        assertEquals(true, gate.isCurrent("gh5:aaaaa"))
+        assertEquals(false, gate.isCurrent("gh5:bbbbb"))
+        assertEquals(true, gate.shouldRefresh("gh5:aaaaa", 61_000))
+    }
 }
