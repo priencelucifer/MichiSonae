@@ -174,6 +174,13 @@ internal class RegionalSnapshotRefreshGate(
     }
 
     fun isCurrent(regionId: String): Boolean = currentRegion == regionId
+
+    @Synchronized
+    fun storeIfCurrent(
+        regionId: String,
+        store: () -> RegionalHazardSnapshot,
+    ): RegionalHazardSnapshot? =
+        if (currentRegion == regionId) store() else null
 }
 
 internal sealed interface HazardSnapshotDownload {
@@ -280,7 +287,11 @@ internal class NearbyHazardSnapshots(
 
     fun cached(): RegionalHazardSnapshot? = cache.read()
 
-    fun refresh(latitude: Double, longitude: Double): HazardRefreshResult {
+    fun refresh(
+        latitude: Double,
+        longitude: Double,
+        refreshGate: RegionalSnapshotRefreshGate? = null,
+    ): HazardRefreshResult {
         val existing = cache.read()
         val regionId = regionalHazardId(latitude, longitude)
         return try {
@@ -293,12 +304,20 @@ internal class NearbyHazardSnapshots(
                 HazardSnapshotDownload.NotModified ->
                     HazardRefreshResult(existing, changed = false, error = false)
 
-                is HazardSnapshotDownload.Updated ->
+                is HazardSnapshotDownload.Updated -> {
+                    val stored = refreshGate?.storeIfCurrent(regionId) {
+                        cache.replace(result.serialized)
+                    } ?: if (refreshGate == null) {
+                        cache.replace(result.serialized)
+                    } else {
+                        null
+                    }
                     HazardRefreshResult(
-                        cache.replace(result.serialized),
-                        changed = true,
+                        snapshot = stored ?: cache.read(),
+                        changed = stored != null,
                         error = false,
                     )
+                }
             }
         } catch (_: Exception) {
             HazardRefreshResult(cache.read(), changed = false, error = true)

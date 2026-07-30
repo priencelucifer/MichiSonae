@@ -68,4 +68,20 @@ class HazardSnapshotsTest {
         assertEquals(false, gate.isCurrent("gh5:bbbbb"))
         assertEquals(true, gate.shouldRefresh("gh5:aaaaa", 61_000))
     }
+
+    @Test
+    fun obsoleteRegionCannotEnterThePersistenceBlock() {
+        val gate = RegionalSnapshotRefreshGate()
+        gate.shouldRefresh("gh5:aaaaa", 1_000)
+        gate.shouldRefresh("gh5:bbbbb", 2_000)
+        var stored = false
+
+        val result = gate.storeIfCurrent("gh5:aaaaa") {
+            stored = true
+            SimulatedRegionalHazards.guwahati(1_000)
+        }
+
+        assertEquals(null, result)
+        assertEquals(false, stored)
+    }
 }

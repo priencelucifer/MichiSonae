@@ -153,16 +153,14 @@ internal fun MichiSonaeApp() {
                             HazardSnapshotCache(context).clear()
                         }
                     }.isSuccess
-                    if (deleted) {
-                        val credentials = credentialsToRevoke
-                        val baseUrl = BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)
-                        if (credentials != null && baseUrl != null) {
-                            runCatching {
-                                revokeCredentialsBestEffort(
-                                    MichiSonaeApi(baseUrl),
-                                    credentials,
-                                )
-                            }
+                    val credentials = credentialsToRevoke
+                    val baseUrl = BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)
+                    if (credentials != null && baseUrl != null) {
+                        runCatching {
+                            revokeCredentialsBestEffort(
+                                MichiSonaeApi(baseUrl),
+                                credentials,
+                            )
                         }
                     }
                     context.mainExecutor.execute {

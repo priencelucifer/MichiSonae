@@ -176,7 +176,11 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         val now = SystemClock.elapsedRealtime()
         if (!snapshotRefreshGate.shouldRefresh(region, now)) return
         networkExecutor.execute {
-            val refreshed = snapshots.refresh(location.latitude, location.longitude).snapshot
+            val refreshed = snapshots.refresh(
+                location.latitude,
+                location.longitude,
+                snapshotRefreshGate,
+            ).snapshot
             if (
                 snapshotRefreshGate.isCurrent(region) &&
                 refreshed?.regionId == region
