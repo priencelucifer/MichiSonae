@@ -25,20 +25,15 @@ class FuelCoverageGuardianTest {
     @Test
     fun warnsAtUpcomingStationWhenFollowingStationIsOutOfRange() {
         val estimate = estimateFuelRange(profile, 10.0, FuelLevelSource.OBD)
-        val upcoming = FuelStationAhead("Upcoming fuel pump", 15.0, true)
-
-        val advice = FuelCoverageGuardian.evaluate(
-            estimate = estimate,
-            stationsAhead = listOf(
-                upcoming,
-                FuelStationAhead("Following fuel pump", 80.0, null),
-            ),
-            remainingRouteKm = 150.0,
-        )
+        val scenario = FuelRouteScenarioSimulator.criticalGap(estimate)
+        val upcoming = scenario.stationsAhead.first()
+        val advice = FuelCoverageGuardian.evaluate(scenario)
 
         assertEquals(FuelAdviceLevel.FUEL_AT_UPCOMING_STATION, advice.level)
         assertEquals(upcoming, advice.station)
+        assertTrue(advice.message.contains("If you miss it"))
         assertTrue(advice.message.contains("beyond"))
+        assertTrue(advice.message.contains("Estimate only"))
     }
 
     @Test
@@ -50,6 +45,43 @@ class FuelCoverageGuardianTest {
         )
 
         assertEquals(FuelAdviceLevel.NO_REACHABLE_STATION, advice.level)
+    }
+
+    @Test
+    fun closedStationIsNeverTreatedAsReachableFuel() {
+        val estimate = estimateFuelRange(profile, 10.0, FuelLevelSource.OBD)
+        val advice = FuelCoverageGuardian.evaluate(
+            FuelRouteScenarioSimulator.closedUpcoming(estimate),
+        )
+
+        assertEquals(FuelAdviceLevel.NO_REACHABLE_STATION, advice.level)
+        assertTrue(advice.message.contains("closed"))
+        assertTrue(advice.message.contains("beyond"))
+    }
+
+    @Test
+    fun unknownOpeningStatusMustBeVerified() {
+        val estimate = estimateFuelRange(profile, 10.0, FuelLevelSource.OBD)
+        val advice = FuelCoverageGuardian.evaluate(
+            FuelRouteScenarioSimulator.unknownUpcoming(estimate),
+        )
+
+        assertEquals(FuelAdviceLevel.FUEL_AT_UPCOMING_STATION, advice.level)
+        assertTrue(advice.message.contains("unknown opening status"))
+        assertTrue(advice.message.contains("verify"))
+    }
+
+    @Test
+    fun completedRouteAdviceStillSaysItIsAnEstimate() {
+        val estimate = estimateFuelRange(profile, 50.0, FuelLevelSource.MANUAL)
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimate,
+            stationsAhead = emptyList(),
+            remainingRouteKm = 10.0,
+        )
+
+        assertEquals(FuelAdviceLevel.ENOUGH_RANGE, advice.level)
+        assertTrue(advice.message.contains("Estimate only"))
     }
 
     @Test
