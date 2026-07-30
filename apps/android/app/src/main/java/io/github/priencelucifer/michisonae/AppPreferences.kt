@@ -60,6 +60,12 @@ internal class AppPreferences(context: Context) {
         }
     }
 
+    fun clearAll() {
+        check(preferences.edit().clear().commit()) {
+            "Could not delete local preferences"
+        }
+    }
+
     private companion object {
         const val KEY_PRIVACY_ACCEPTED = "privacy_accepted"
         const val KEY_INSTALLATION_ID = "installation_id"

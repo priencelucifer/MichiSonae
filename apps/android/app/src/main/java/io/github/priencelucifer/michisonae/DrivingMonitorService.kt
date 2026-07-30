@@ -49,6 +49,7 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         }
         vehicleClass = profile.vehicleClass
         warningPlayer = DriverWarningPlayer(this)
+        OfflineObservationQueue.resumeAcceptingObservations()
         observationQueue = OfflineObservationQueue(this)
         sensorManager = getSystemService(SensorManager::class.java)
         locationManager = getSystemService(LocationManager::class.java)

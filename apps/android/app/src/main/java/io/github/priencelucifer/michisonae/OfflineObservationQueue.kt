@@ -8,10 +8,9 @@ import org.json.JSONArray
 
 internal class OfflineObservationQueue(context: Context) {
     private val file = AtomicFile(context.filesDir.resolve("pending-road-observations.json"))
-    private val lock = ReentrantLock()
 
     fun enqueue(observation: RoadObservationDraft) = lock.withLock {
-        write(read() + observation)
+        if (acceptingObservations) write(read() + observation)
     }
 
     fun pending(limit: Int = 100): List<RoadObservationDraft> = lock.withLock {
@@ -20,6 +19,11 @@ internal class OfflineObservationQueue(context: Context) {
     }
 
     fun pendingCount(): Int = lock.withLock { read().size }
+
+    fun clearAll() = lock.withLock {
+        acceptingObservations = false
+        write(emptyList())
+    }
 
     fun acknowledgeAfterDurableAcceptance(
         eventIds: Set<String>,
@@ -51,6 +55,17 @@ internal class OfflineObservationQueue(context: Context) {
         } catch (error: Exception) {
             file.failWrite(output)
             throw error
+        }
+    }
+
+    companion object {
+        private val lock = ReentrantLock()
+
+        @Volatile
+        private var acceptingObservations = true
+
+        fun resumeAcceptingObservations() {
+            acceptingObservations = true
         }
     }
 }
