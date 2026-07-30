@@ -49,6 +49,7 @@ internal fun MichiSonaeApp() {
     var hasConsent by remember { mutableStateOf(preferences.hasAcceptedPrivacy()) }
     var vehicleProfile by remember { mutableStateOf(preferences.loadVehicleProfile()) }
     var isEditingVehicle by rememberSaveable { mutableStateOf(false) }
+    var isDrivingDemoOpen by rememberSaveable { mutableStateOf(false) }
 
     when {
         !hasConsent -> OnboardingScreen {
@@ -67,9 +68,15 @@ internal fun MichiSonaeApp() {
             },
         )
 
+        isDrivingDemoOpen -> DrivingDemoScreen(
+            vehicleClass = checkNotNull(vehicleProfile).vehicleClass,
+            onBack = { isDrivingDemoOpen = false },
+        )
+
         else -> HomeScreen(
             profile = checkNotNull(vehicleProfile),
             onEditVehicle = { isEditingVehicle = true },
+            onOpenDrivingDemo = { isDrivingDemoOpen = true },
         )
     }
 }
@@ -264,6 +271,7 @@ private fun DecimalField(
 private fun HomeScreen(
     profile: VehicleProfile,
     onEditVehicle: () -> Unit,
+    onOpenDrivingDemo: () -> Unit,
 ) {
     Page {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -274,7 +282,7 @@ private fun HomeScreen(
             )
             CapabilityCard(
                 name = "Phone road detection",
-                detail = "Available without hardware or OBD-II",
+                detail = "Deterministic demo available without hardware or OBD-II",
                 capability = Capability.AVAILABLE,
             )
             CapabilityCard(
@@ -288,10 +296,113 @@ private fun HomeScreen(
                 capability = Capability.PLANNED,
             )
             OutlinedButton(
+                onClick = onOpenDrivingDemo,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Try phone detection demo")
+            }
+            OutlinedButton(
                 onClick = onEditVehicle,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Edit vehicle")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrivingDemoScreen(
+    vehicleClass: VehicleClass,
+    onBack: () -> Unit,
+) {
+    val drivingDetector = remember { AutomaticDrivingDetector() }
+    val roadDetector = remember { PhoneRoadHazardDetector() }
+    var drivingStateName by rememberSaveable { mutableStateOf(DrivingState.IDLE.name) }
+    var warning by rememberSaveable { mutableStateOf<String?>(null) }
+    val drivingState = DrivingState.valueOf(drivingStateName)
+
+    Page {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Phone detection demo", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Uses simulated speed and motion. No OBD-II, hardware, location, or " +
+                    "sensor permission is needed.",
+            )
+            CapabilityCard(
+                name = "Driving status",
+                detail = drivingState.displayName,
+                capability = if (drivingState == DrivingState.DRIVING) {
+                    Capability.AVAILABLE
+                } else {
+                    Capability.DEGRADED
+                },
+            )
+            Button(
+                onClick = {
+                    val now = System.currentTimeMillis()
+                    drivingDetector.update(MotionSample(now, 20.0))
+                    drivingStateName = drivingDetector.update(
+                        MotionSample(now + 30_000, 20.0),
+                    ).name
+                    warning = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Simulate automatic driving detection")
+            }
+            Button(
+                onClick = {
+                    warning = roadDetector.observe(
+                        sample = RoadSample(
+                            speedKph = 30.0,
+                            verticalLinearAccelerationG = 1.5,
+                        ),
+                        vehicleClass = vehicleClass,
+                        drivingState = drivingState,
+                    )?.userMessage ?: "Start the driving simulation first."
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Simulate sudden road impact")
+            }
+            Button(
+                onClick = {
+                    repeat(3) {
+                        warning = roadDetector.observe(
+                            sample = RoadSample(
+                                speedKph = 25.0,
+                                verticalLinearAccelerationG = 0.4 *
+                                    vehicleClass.roadImpactThresholdMultiplier,
+                            ),
+                            vehicleClass = vehicleClass,
+                            drivingState = drivingState,
+                        )?.userMessage ?: warning
+                    }
+                    if (warning == null) warning = "Start the driving simulation first."
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Simulate rough road")
+            }
+            warning?.let {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = it,
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
+            Text(
+                "Detection thresholds are adjusted for ${vehicleClass.displayName.lowercase()} " +
+                    "cars. These are test values and require later road calibration.",
+            )
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Back")
             }
         }
     }

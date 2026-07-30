@@ -7,10 +7,15 @@ Native Kotlin/Jetpack Compose application.
 - account-free privacy onboarding
 - local-only installation identity and vehicle profile
 - vehicle-size road sensitivity policy
+- deterministic automatic-driving and phone road-detection demo
 
 The app does not store trip history. The installation identity and vehicle
 profile remain on the phone until the backend authentication slice explicitly
 uses the identity.
+
+The phone detection screen currently uses simulated motion so the full
+classification path can be tested without permissions or hardware. Real
+location and accelerometer sampling will reuse the same deterministic policy.
 
 ## Planned modules
 
