@@ -2,6 +2,16 @@
 
 Native Kotlin/Jetpack Compose application.
 
+## Implemented
+
+- account-free privacy onboarding
+- local-only installation identity and vehicle profile
+- vehicle-size road sensitivity policy
+
+The app does not store trip history. The installation identity and vehicle
+profile remain on the phone until the backend authentication slice explicitly
+uses the identity.
+
 ## Planned modules
 
 - `app`: composition and release configuration
