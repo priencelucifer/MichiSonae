@@ -15,6 +15,10 @@ Native Kotlin/Jetpack Compose application.
 - manual/OBD fuel range and route fuel-coverage simulation
 - screen-off foreground phone monitoring using GPS speed and linear acceleration
 - local English TTS, alert tone, vibration and transient music pause/resume
+- external Maps handoff for fuel pumps and selectable service-center searches
+- local Gemma prompt/result boundary with deterministic policy ownership
+- local wake-word command routing boundary with no microphone upload
+- two-step deletion of profile, identity, consent and pending observations
 
 The app does not store trip history. The installation identity and vehicle
 profile remain on the phone until the backend authentication slice explicitly
@@ -39,6 +43,13 @@ low-priority foreground notification keeps detection alive with the screen off.
 The service stores coordinates only for a detected hazard event; it does not
 record ordinary locations or construct trip history. Android may require the
 app to be opened once again after a phone restart before monitoring resumes.
+
+The current service-center cards and local explanation are honest simulations.
+Maps supplies live search, navigation, and opening-hour details without copying
+Google Maps into MichiSonae. The Gemma and wake-word boundaries do not load a
+model or capture audio yet; all prompt/result handling is designed to stay on
+the phone. Emergency contacts remain deferred with crash/SOS and LoRa until
+their required future ADR is approved.
 
 ## Planned modules
 

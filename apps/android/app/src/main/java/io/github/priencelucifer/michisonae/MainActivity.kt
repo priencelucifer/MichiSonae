@@ -59,6 +59,8 @@ internal fun MichiSonaeApp() {
     var isEditingVehicle by rememberSaveable { mutableStateOf(false) }
     var isDrivingDemoOpen by rememberSaveable { mutableStateOf(false) }
     var isVehicleDemoOpen by rememberSaveable { mutableStateOf(false) }
+    var isAssistanceOpen by rememberSaveable { mutableStateOf(false) }
+    var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var hasDrivingPermissions by remember {
         mutableStateOf(hasDrivingPermissions(context))
     }
@@ -109,11 +111,39 @@ internal fun MichiSonaeApp() {
             onBack = { isVehicleDemoOpen = false },
         )
 
+        isAssistanceOpen -> AssistanceScreen(
+            onBack = { isAssistanceOpen = false },
+        )
+
+        isSettingsOpen -> SettingsScreen(
+            pendingObservationCount = remember {
+                runCatching {
+                    OfflineObservationQueue(context).pendingCount()
+                }.getOrDefault(0)
+            },
+            onDeleteAllData = {
+                context.stopService(Intent(context, DrivingMonitorService::class.java))
+                runCatching {
+                    OfflineObservationQueue(context).clearAll()
+                    preferences.clearAll()
+                }.isSuccess.also { deleted ->
+                    if (deleted) {
+                        vehicleProfile = null
+                        hasConsent = false
+                        isSettingsOpen = false
+                    }
+                }
+            },
+            onBack = { isSettingsOpen = false },
+        )
+
         else -> HomeScreen(
             profile = checkNotNull(vehicleProfile),
             onEditVehicle = { isEditingVehicle = true },
             onOpenDrivingDemo = { isDrivingDemoOpen = true },
             onOpenVehicleDemo = { isVehicleDemoOpen = true },
+            onOpenAssistance = { isAssistanceOpen = true },
+            onOpenSettings = { isSettingsOpen = true },
         )
     }
 }
@@ -347,6 +377,8 @@ private fun HomeScreen(
     onEditVehicle: () -> Unit,
     onOpenDrivingDemo: () -> Unit,
     onOpenVehicleDemo: () -> Unit,
+    onOpenAssistance: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     Page {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -383,10 +415,22 @@ private fun HomeScreen(
                 Text("Try OBD and fuel demo")
             }
             OutlinedButton(
+                onClick = onOpenAssistance,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Fuel pumps and service centers")
+            }
+            OutlinedButton(
                 onClick = onEditVehicle,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Edit vehicle")
+            }
+            OutlinedButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Settings and privacy")
             }
         }
     }
@@ -432,6 +476,8 @@ private fun VehicleDemoScreen(
         Elm327Simulator.response(Elm327Command.READ_TROUBLE_CODES),
     ).first()
     val finding = DiagnosticPolicy.interpret(diagnosticCode)
+    val explained = attachLocalExplanation(finding, mockLocalExplanation(finding))
+    var showExplanation by rememberSaveable { mutableStateOf(false) }
 
     Page {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -442,6 +488,25 @@ private fun VehicleDemoScreen(
                 detail = "${finding.title}. ${finding.safeAction}",
                 capability = Capability.DEGRADED,
             )
+            OutlinedButton(
+                onClick = { showExplanation = !showExplanation },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (showExplanation) {
+                        "Hide local explanation"
+                    } else {
+                        "Explain in simple English"
+                    },
+                )
+            }
+            if (showExplanation) {
+                Text(explained.explanation)
+                Text(
+                    "Mock local explanation. A Gemma model is not bundled yet; severity and " +
+                        "safe action always come from deterministic policy.",
+                )
+            }
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
@@ -491,6 +556,128 @@ private fun VehicleDemoScreen(
                 "If an adapter does not support fuel level, the same calculation accepts a " +
                     "manual fuel percentage.",
             )
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Back")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistanceScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val options = listOf(
+        ServiceCenterOption(
+            "24-hour service center",
+            PlaceAvailability.OPEN,
+            "car service center open now",
+        ),
+        ServiceCenterOption(
+            "Nearby independent mechanic",
+            PlaceAvailability.UNKNOWN,
+            "car mechanic near me",
+        ),
+        ServiceCenterOption(
+            "Dealer workshop",
+            PlaceAvailability.CLOSED,
+            "car dealer service center",
+        ),
+    )
+
+    Page {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Nearby help", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "MichiSonae hands search and navigation to your map app. Opening hours must " +
+                    "be confirmed there because they can change.",
+            )
+            Button(
+                onClick = { context.openMapSearch("fuel station near me") },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Find nearby fuel pumps")
+            }
+            options.forEach { option ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(option.name, style = MaterialTheme.typography.titleMedium)
+                        Text(option.availability.displayName)
+                        OutlinedButton(
+                            onClick = { context.openMapSearch(option.mapQuery) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Check options in Maps")
+                        }
+                    }
+                }
+            }
+            Text(
+                "The three availability labels above are demo states. Live results will come " +
+                    "from the map app until a places provider is connected.",
+            )
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Back")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    pendingObservationCount: Int,
+    onDeleteAllData: () -> Boolean,
+    onBack: () -> Unit,
+) {
+    var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var deletionFailed by rememberSaveable { mutableStateOf(false) }
+
+    Page {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Settings and privacy", style = MaterialTheme.typography.headlineMedium)
+            Text("Phone-only detection is always active after location permission is granted.")
+            Text("Warnings use English voice, sound, vibration, and temporary music pause.")
+            Text("$pendingObservationCount road observations are waiting for durable upload.")
+            Text(
+                "No account, trip history, raw microphone audio, raw OBD stream, AI " +
+                    "conversation, or sensor-tuning trace is stored on the server.",
+            )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Checkbox(
+                    checked = confirmDelete,
+                    onCheckedChange = { confirmDelete = it },
+                )
+                Text(
+                    "I understand this deletes the vehicle profile, anonymous local identity, " +
+                        "consent, and queued road observations.",
+                    modifier = Modifier
+                        .padding(top = 12.dp)
+                        .weight(1f),
+                )
+            }
+            Button(
+                onClick = {
+                    deletionFailed = !onDeleteAllData()
+                },
+                enabled = confirmDelete,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Delete all local data")
+            }
+            if (deletionFailed) {
+                Text(
+                    "Some local data could not be deleted. Please try again.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             OutlinedButton(
                 onClick = onBack,
                 modifier = Modifier.fillMaxWidth(),
