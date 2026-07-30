@@ -1,6 +1,7 @@
 package io.github.priencelucifer.michisonae
 
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 internal data class MotionSample(
     val timestampMillis: Long,
@@ -65,6 +66,11 @@ internal data class RoadSample(
     val speedKph: Double,
     val verticalLinearAccelerationG: Double,
 )
+
+internal fun linearAccelerationMagnitudeG(x: Float, y: Float, z: Float): Double =
+    sqrt((x * x + y * y + z * z).toDouble()) / STANDARD_GRAVITY
+
+private const val STANDARD_GRAVITY = 9.80665
 
 internal enum class RoadHazard(val userMessage: String) {
     SUDDEN_IMPACT("Road hazard ahead. Slow down safely."),

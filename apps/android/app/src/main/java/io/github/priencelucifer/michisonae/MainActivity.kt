@@ -1,8 +1,15 @@
 package io.github.priencelucifer.michisonae
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +59,24 @@ internal fun MichiSonaeApp() {
     var isEditingVehicle by rememberSaveable { mutableStateOf(false) }
     var isDrivingDemoOpen by rememberSaveable { mutableStateOf(false) }
     var isVehicleDemoOpen by rememberSaveable { mutableStateOf(false) }
+    var hasDrivingPermissions by remember {
+        mutableStateOf(hasDrivingPermissions(context))
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        hasDrivingPermissions = hasDrivingPermissions(context)
+    }
+
+    LaunchedEffect(hasConsent, vehicleProfile, hasDrivingPermissions) {
+        if (hasConsent && vehicleProfile != null && hasDrivingPermissions) {
+            runCatching {
+                context.startForegroundService(
+                    Intent(context, DrivingMonitorService::class.java),
+                )
+            }
+        }
+    }
 
     when {
         !hasConsent -> OnboardingScreen {
@@ -68,6 +94,10 @@ internal fun MichiSonaeApp() {
                 isEditingVehicle = false
             },
         )
+
+        !hasDrivingPermissions -> DrivingPermissionScreen {
+            permissionLauncher.launch(requiredDrivingPermissions())
+        }
 
         isDrivingDemoOpen -> DrivingDemoScreen(
             vehicleClass = checkNotNull(vehicleProfile).vehicleClass,
@@ -87,6 +117,43 @@ internal fun MichiSonaeApp() {
         )
     }
 }
+
+@Composable
+private fun DrivingPermissionScreen(onRequest: () -> Unit) {
+    Page {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Keep detection active", style = MaterialTheme.typography.headlineMedium)
+            Text(
+                "Location lets MichiSonae detect driving speed and attach a position only when " +
+                    "a road hazard is detected.",
+            )
+            Text(
+                "A permanent low-priority notification keeps phone detection active while the " +
+                    "screen is dark. MichiSonae does not create trip history.",
+            )
+            Button(
+                onClick = onRequest,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Allow driving detection")
+            }
+        }
+    }
+}
+
+private fun hasDrivingPermissions(context: Context): Boolean =
+    context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED ||
+        context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+private fun requiredDrivingPermissions(): Array<String> = buildList {
+    add(Manifest.permission.ACCESS_COARSE_LOCATION)
+    add(Manifest.permission.ACCESS_FINE_LOCATION)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+}.toTypedArray()
 
 @Composable
 private fun Page(content: @Composable () -> Unit) {
