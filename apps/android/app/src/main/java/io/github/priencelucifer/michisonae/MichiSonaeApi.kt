@@ -20,6 +20,13 @@ internal enum class UploadOutcome {
     REJECTED,
 }
 
+internal enum class RevocationOutcome {
+    REVOKED,
+    ALREADY_INVALID,
+    RETRY,
+    REJECTED,
+}
+
 internal fun acknowledgedEventIds(
     outcome: UploadOutcome,
     submittedEventIds: Set<String>,
@@ -43,16 +50,25 @@ internal fun classifyUpload(
     else -> UploadOutcome.REJECTED
 }
 
-internal class MichiSonaeApi(baseUrl: String) {
-    private val baseUrl = baseUrl.trimEnd('/').also {
-        val uri = URI(it)
-        require(
-            uri.scheme == "https" ||
-                (uri.scheme == "http" && uri.host in setOf("localhost", "127.0.0.1")),
-        ) {
-            "The API must use HTTPS outside local development"
-        }
+internal fun classifyRevocation(statusCode: Int): RevocationOutcome = when {
+    statusCode == 204 -> RevocationOutcome.REVOKED
+    statusCode == 401 -> RevocationOutcome.ALREADY_INVALID
+    statusCode == 408 || statusCode == 429 || statusCode >= 500 -> RevocationOutcome.RETRY
+    else -> RevocationOutcome.REJECTED
+}
+
+internal fun validatedApiBaseUrl(value: String): String = value.trimEnd('/').also {
+    val uri = URI(it)
+    require(
+        uri.scheme == "https" ||
+            (uri.scheme == "http" && uri.host in setOf("localhost", "127.0.0.1")),
+    ) {
+        "The API must use HTTPS outside local development"
     }
+}
+
+internal class MichiSonaeApi(baseUrl: String) {
+    private val baseUrl = validatedApiBaseUrl(baseUrl)
 
     fun register(): AnonymousCredentials = credentialsRequest(
         path = "/v1/installations:register",
@@ -113,6 +129,21 @@ internal class MichiSonaeApi(baseUrl: String) {
         return outcome
     }
 
+    fun revoke(accessToken: String): RevocationOutcome {
+        require(accessToken.isNotBlank())
+        val connection = open(
+            path = "/v1/installations/current",
+            method = "DELETE",
+        ).apply {
+            setRequestProperty("Authorization", "Bearer $accessToken")
+        }
+        return try {
+            classifyRevocation(connection.responseCode)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun credentialsRequest(
         path: String,
         body: String,
@@ -137,14 +168,17 @@ internal class MichiSonaeApi(baseUrl: String) {
         }
     }
 
-    private fun open(path: String): HttpURLConnection =
+    private fun open(
+        path: String,
+        method: String = "POST",
+    ): HttpURLConnection =
         (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
+            requestMethod = method
             connectTimeout = 10_000
             readTimeout = 15_000
-            doOutput = true
+            doOutput = method == "POST"
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("Content-Type", "application/json")
+            if (doOutput) setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Cache-Control", "no-store")
         }
 
