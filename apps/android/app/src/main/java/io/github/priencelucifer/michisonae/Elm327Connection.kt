@@ -85,6 +85,21 @@ internal object Elm327ConnectionMachine {
                 listOf(Elm327ConnectionAction.CloseSocket),
             )
         }
+        if (state == Elm327ConnectionState.Stopped) {
+            return when (event) {
+                Elm327ConnectionEvent.Start -> Elm327Transition(
+                    Elm327ConnectionState.Connecting(attempt = 1),
+                    listOf(Elm327ConnectionAction.OpenSocket),
+                )
+
+                Elm327ConnectionEvent.SocketConnected -> Elm327Transition(
+                    state,
+                    listOf(Elm327ConnectionAction.CloseSocket),
+                )
+
+                else -> Elm327Transition(state)
+            }
+        }
         if (event is Elm327ConnectionEvent.ConnectionFailed) {
             val attempt = when (state) {
                 is Elm327ConnectionState.Connecting -> state.attempt
@@ -92,7 +107,7 @@ internal object Elm327ConnectionMachine {
                 is Elm327ConnectionState.Discovering -> state.attempt
                 is Elm327ConnectionState.Ready -> state.attempt
                 is Elm327ConnectionState.WaitingToRetry -> state.nextAttempt
-                Elm327ConnectionState.Stopped -> 1
+                Elm327ConnectionState.Stopped -> error("Handled above")
             }
             val delay = retryDelayMs(attempt)
             return Elm327Transition(
@@ -109,12 +124,6 @@ internal object Elm327ConnectionMachine {
         }
 
         return when {
-            state == Elm327ConnectionState.Stopped &&
-                event == Elm327ConnectionEvent.Start -> Elm327Transition(
-                Elm327ConnectionState.Connecting(attempt = 1),
-                listOf(Elm327ConnectionAction.OpenSocket),
-            )
-
             state is Elm327ConnectionState.WaitingToRetry &&
                 event == Elm327ConnectionEvent.RetryElapsed -> Elm327Transition(
                 Elm327ConnectionState.Connecting(state.nextAttempt),

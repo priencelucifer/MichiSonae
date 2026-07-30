@@ -10,7 +10,7 @@ class BackendStatusTest {
         val status = backendStatus(
             pendingUploadCount = 3,
             hasNetwork = false,
-            lastSyncFailed = false,
+            lastSyncFailureAtMillis = null,
             hasCachedSnapshot = true,
             snapshotGeneratedAtMillis = 1_000,
             nowMillis = 60_000,
@@ -26,7 +26,7 @@ class BackendStatusTest {
         val status = backendStatus(
             pendingUploadCount = 0,
             hasNetwork = true,
-            lastSyncFailed = true,
+            lastSyncFailureAtMillis = 30 * 60 * 1_000L,
             hasCachedSnapshot = true,
             snapshotGeneratedAtMillis = 0,
             nowMillis = 31 * 60 * 1_000L,
@@ -42,7 +42,7 @@ class BackendStatusTest {
         val status = backendStatus(
             pendingUploadCount = 0,
             hasNetwork = true,
-            lastSyncFailed = false,
+            lastSyncFailureAtMillis = null,
             hasCachedSnapshot = false,
             snapshotGeneratedAtMillis = null,
             nowMillis = 1_000,
@@ -50,5 +50,21 @@ class BackendStatusTest {
 
         assertEquals(SnapshotFreshness.NOT_AVAILABLE, status.snapshotFreshness)
         assertEquals("No saved nearby hazard data yet.", status.snapshotLabel)
+    }
+
+    @Test
+    fun unconfiguredBackendIsNotReportedAsConnected() {
+        val status = backendStatus(
+            pendingUploadCount = 2,
+            hasNetwork = true,
+            lastSyncFailureAtMillis = null,
+            hasCachedSnapshot = false,
+            snapshotGeneratedAtMillis = null,
+            nowMillis = 1_000,
+            backendConfigured = false,
+        )
+
+        assertEquals("Backend endpoint is not configured yet.", status.connectionLabel)
+        assertTrue(status.uploadLabel.startsWith("2 road reports"))
     }
 }

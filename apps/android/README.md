@@ -9,10 +9,14 @@ Native Kotlin/Jetpack Compose application.
 - vehicle-size road sensitivity policy
 - deterministic automatic-driving and phone road-detection demo
 - atomic offline road-observation queue
-- HTTPS anonymous registration, single-flight refresh and durable upload client
-- strict read-only ELM327 command parser and simulator
+- Android Keystore-encrypted anonymous credentials with registration, refresh and revocation
+- native network-aware background upload with exponential retry
+- atomic regional hazard snapshots and offline direction-aware warnings
+- background status, pending upload and snapshot freshness indicators
+- strict read-only Bluetooth ELM327 client, connection state machine and simulator
+- cheap-clone response normalization and supported-PID discovery
 - deterministic diagnostic safe-action policy
-- manual/OBD fuel range and route fuel-coverage simulation
+- manual/OBD fuel range and open/closed/unknown route fuel-coverage scenarios
 - screen-off foreground phone monitoring using GPS speed and linear acceleration
 - local English TTS, alert tone, vibration and transient music pause/resume
 - external Maps handoff for fuel pumps and selectable service-center searches
@@ -20,9 +24,9 @@ Native Kotlin/Jetpack Compose application.
 - local wake-word command routing boundary with no microphone upload
 - two-step deletion of profile, identity, consent and pending observations
 
-The app does not store trip history. The installation identity and vehicle
-profile remain on the phone until the backend authentication slice explicitly
-uses the identity.
+The app does not store trip history. The local installation identity and vehicle
+profile remain on the phone. Server-issued anonymous access and rotating refresh
+credentials are encrypted with an AES-GCM key held by Android Keystore.
 
 The phone detection screen currently uses simulated motion so the full
 classification path can be tested without permissions or hardware. Real
@@ -33,16 +37,35 @@ samples or trip sequences. An item is removed only after the API returns a
 balanced `202` durable-acceptance response. The API client is intentionally not
 connected to a production endpoint until deployment supplies one.
 
-The OBD demo cannot send arbitrary commands: its enum contains only adapter
-setup, live Mode 01 reads, and Mode 03 trouble-code reads. It contains no Mode
-04 clearing, coding, actuation, or manufacturer write path. Fuel calculations
-use a 20% uncertainty buffer and are always labelled as estimates.
+When an endpoint is configured, Android selects a coarse global geohash region,
+downloads the public aggregate snapshot with ETag caching, and warns from the
+last valid atomic cache while offline. Ordinary location samples are not
+uploaded. The foreground service schedules native background upload after a
+new report is stored.
+
+The OBD transport cannot send arbitrary commands: its typed allow-list contains
+only adapter setup, live Mode 01 reads, and Mode 03 trouble-code reads. It
+contains no Mode 04 clearing, coding, actuation, or manufacturer write path.
+It normalizes bounded ELM327 clone responses, discovers supported PID bitmaps,
+keeps multi-ECU/ISO-TP replies separate, enforces a five-second prompt timeout,
+and skips values the car does not expose. Fuel calculations use a 20%
+uncertainty buffer and are always labelled as estimates.
 
 Android location permission is requested once before monitoring starts. A
 low-priority foreground notification keeps detection alive with the screen off.
 The service stores coordinates only for a detected hazard event; it does not
 record ordinary locations or construct trip history. Android may require the
 app to be opened once again after a phone restart before monitoring resumes.
+Bluetooth remains optional, so phones without Bluetooth can still install and
+run phone-only road detection. Real adapter pairing and compatibility testing
+require physical hardware; the owner UI therefore stays on the simulator until
+an already-paired adapter is available for end-to-end validation.
+
+Delete-all cancels sync, blocks credential and snapshot recreation, attempts
+anonymous backend revocation when an endpoint is configured, and always removes
+local credentials, queued reports, cached hazards, consent and vehicle data.
+The cache currently keeps one geohash region; adjacent-cell prefetch should be
+added only if boundary testing shows missed warnings.
 
 The current service-center cards and local explanation are honest simulations.
 Maps supplies live search, navigation, and opening-hour details without copying
@@ -90,6 +113,15 @@ On Windows PowerShell:
 ```powershell
 .\gradlew.bat testDebugUnitTest lintDebug assembleDebug
 ```
+
+Deployment builds supply the HTTPS API without committing an endpoint:
+
+```powershell
+.\gradlew.bat -PMICHI_API_BASE_URL=https://api.example.com assembleRelease
+```
+
+With no property, the app builds safely with uploads and snapshot refresh
+unconfigured; phone detection, local queueing and simulations still work.
 
 The wrapper verifies the downloaded Gradle distribution with the SHA-256 value
 published for Gradle 9.5.1. GitHub CI also validates the committed wrapper JAR.

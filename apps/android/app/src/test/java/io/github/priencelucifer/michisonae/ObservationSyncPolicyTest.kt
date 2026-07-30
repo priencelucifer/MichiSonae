@@ -1,5 +1,6 @@
 package io.github.priencelucifer.michisonae
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,5 +22,12 @@ class ObservationSyncPolicyTest {
     fun emptyAndPermanentlyRejectedWorkDoNotLoop() {
         assertFalse(shouldRetrySync(null, false))
         assertFalse(shouldRetrySync(UploadOutcome.REJECTED, true))
+    }
+
+    @Test
+    fun latestResultKeepsRealFailureState() {
+        assertEquals(LatestSyncStatus.SUCCEEDED, latestSyncStatus(UploadOutcome.ACCEPTED))
+        assertEquals(LatestSyncStatus.RETRYING, latestSyncStatus(UploadOutcome.RETRY))
+        assertEquals(LatestSyncStatus.REJECTED, latestSyncStatus(UploadOutcome.REJECTED))
     }
 }

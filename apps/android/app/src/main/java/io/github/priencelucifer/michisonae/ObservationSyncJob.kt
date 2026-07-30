@@ -18,6 +18,48 @@ internal fun shouldRetrySync(
     UploadOutcome.REJECTED, null -> false
 }
 
+internal enum class LatestSyncStatus {
+    NEVER,
+    SUCCEEDED,
+    RETRYING,
+    REJECTED,
+    PAUSED,
+}
+
+internal fun latestSyncStatus(outcome: UploadOutcome?): LatestSyncStatus = when (outcome) {
+    UploadOutcome.ACCEPTED, null -> LatestSyncStatus.SUCCEEDED
+    UploadOutcome.AUTH_EXPIRED, UploadOutcome.RETRY -> LatestSyncStatus.RETRYING
+    UploadOutcome.REJECTED -> LatestSyncStatus.REJECTED
+}
+
+internal class ObservationSyncStatus(context: Context) {
+    private val preferences = context.applicationContext.getSharedPreferences(
+        PREFERENCES,
+        Context.MODE_PRIVATE,
+    )
+
+    fun latest(): LatestSyncStatus = runCatching {
+        LatestSyncStatus.valueOf(
+            preferences.getString(STATUS, null) ?: LatestSyncStatus.NEVER.name,
+        )
+    }.getOrDefault(LatestSyncStatus.NEVER)
+
+    fun record(status: LatestSyncStatus) {
+        check(preferences.edit().putString(STATUS, status.name).commit()) {
+            "Latest sync status could not be stored"
+        }
+    }
+
+    fun clear() {
+        preferences.edit().remove(STATUS).apply()
+    }
+
+    private companion object {
+        const val PREFERENCES = "michisonae-observation-sync-status"
+        const val STATUS = "latest"
+    }
+}
+
 internal object ObservationSyncScheduler {
     private const val JOB_ID = 0x4D53
     private const val ENDPOINT_PREFERENCES = "michisonae-backend-endpoint"
@@ -40,7 +82,7 @@ internal object ObservationSyncScheduler {
         )
             .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
             .setBackoffCriteria(
-                JobInfo.MIN_BACKOFF_MILLIS,
+                30_000L,
                 JobInfo.BACKOFF_POLICY_EXPONENTIAL,
             )
             .build()
@@ -54,6 +96,7 @@ internal object ObservationSyncScheduler {
             .edit()
             .remove(ENDPOINT)
             .apply()
+        ObservationSyncStatus(context).clear()
     }
 
     fun configuredBaseUrl(context: Context): String? =
@@ -70,13 +113,24 @@ internal class ObservationUploadJobService : JobService() {
         val baseUrl = ObservationSyncScheduler.configuredBaseUrl(this) ?: return false
         running = executor.submit {
             val queue = OfflineObservationQueue(this)
-            val retry = runCatching {
+            val status = ObservationSyncStatus(this)
+            val retry = try {
                 val outcome = AnonymousCredentialManager(
                     api = MichiSonaeApi(baseUrl),
                     store = EncryptedCredentialStore(this),
+                    credentialCreationAllowed = {
+                        AppPreferences(this).hasAcceptedPrivacy()
+                    },
                 ).uploadPending(queue)
+                runCatching { status.record(latestSyncStatus(outcome)) }
                 shouldRetrySync(outcome, queue.pendingCount() > 0)
-            }.getOrDefault(true)
+            } catch (_: CredentialCreationDisabled) {
+                runCatching { status.record(LatestSyncStatus.PAUSED) }
+                false
+            } catch (_: Exception) {
+                runCatching { status.record(LatestSyncStatus.RETRYING) }
+                true
+            }
             jobFinished(params, retry)
         }
         return true

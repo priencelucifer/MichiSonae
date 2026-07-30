@@ -44,9 +44,30 @@ class CredentialLifecycleTest {
     @Test
     fun revocationStatusIsDeterministic() {
         assertEquals(RevocationOutcome.REVOKED, classifyRevocation(204))
-        assertEquals(RevocationOutcome.ALREADY_INVALID, classifyRevocation(401))
+        assertEquals(RevocationOutcome.REJECTED, classifyRevocation(401))
         assertEquals(RevocationOutcome.RETRY, classifyRevocation(503))
         assertEquals(RevocationOutcome.REJECTED, classifyRevocation(403))
+    }
+
+    @Test
+    fun expiredRefreshFamilyNeverCreatesANewIdentityForDeletion() {
+        assertEquals(
+            RevocationAccessAction.USE_CURRENT,
+            revocationAccessAction(
+                credentials(
+                    accessExpiry = "2026-07-30T11:00:00Z",
+                    refreshExpiry = "2026-07-30T11:00:00Z",
+                ),
+                now,
+            ),
+        )
+        assertEquals(
+            RevocationAccessAction.REFRESH,
+            revocationAccessAction(
+                credentials(accessExpiry = "2026-07-30T12:00:30Z"),
+                now,
+            ),
+        )
     }
 
     private fun credentials(

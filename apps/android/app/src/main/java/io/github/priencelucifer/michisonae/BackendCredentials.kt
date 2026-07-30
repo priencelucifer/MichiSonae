@@ -8,10 +8,12 @@ import java.security.KeyStore
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.locks.ReentrantLock
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlin.concurrent.withLock
 import org.json.JSONObject
 
 internal enum class CredentialAction {
@@ -19,6 +21,20 @@ internal enum class CredentialAction {
     REFRESH,
     USE_CURRENT,
 }
+
+internal enum class RevocationAccessAction {
+    USE_CURRENT,
+    REFRESH,
+}
+
+internal object CredentialOperationCoordinator {
+    // ponytail: process-wide lock; use a file lock only if sync moves to another process.
+    private val lock = ReentrantLock()
+
+    fun <T> runExclusive(operation: () -> T): T = lock.withLock(operation)
+}
+
+internal class CredentialCreationDisabled : Exception("Backend credentials are disabled locally")
 
 internal fun credentialAction(
     credentials: AnonymousCredentials?,
@@ -36,6 +52,16 @@ internal fun credentialAction(
         else -> CredentialAction.USE_CURRENT
     }
 }
+
+internal fun revocationAccessAction(
+    credentials: AnonymousCredentials,
+    now: Instant,
+): RevocationAccessAction =
+    if (credentialAction(credentials, now) == CredentialAction.REFRESH) {
+        RevocationAccessAction.REFRESH
+    } else {
+        RevocationAccessAction.USE_CURRENT
+    }
 
 internal class EncryptedCredentialStore(context: Context) {
     private val appContext = context.applicationContext
@@ -165,19 +191,18 @@ internal enum class LocalRevocationResult {
 internal class AnonymousCredentialManager(
     private val api: MichiSonaeApi,
     private val store: EncryptedCredentialStore,
+    private val credentialCreationAllowed: () -> Boolean,
     private val clock: Clock = Clock.systemUTC(),
 ) {
-    fun credentials(): AnonymousCredentials = synchronized(lock) {
-        val stored = store.load()
-        when (credentialAction(stored, clock.instant())) {
-            CredentialAction.USE_CURRENT -> checkNotNull(stored)
-            CredentialAction.REFRESH -> refreshOrRegister(checkNotNull(stored))
-            CredentialAction.REGISTER -> registerReplacingLocalState()
-        }
+    fun credentials(): AnonymousCredentials = CredentialOperationCoordinator.runExclusive {
+        credentialsLocked()
     }
 
-    fun uploadPending(queue: OfflineObservationQueue): UploadOutcome? = synchronized(lock) {
-        var current = credentials()
+    fun uploadPending(
+        queue: OfflineObservationQueue,
+    ): UploadOutcome? = CredentialOperationCoordinator.runExclusive {
+        if (queue.pending().isEmpty()) return@runExclusive null
+        var current = credentialsLocked()
         var outcome = api.uploadPending(queue, current)
         if (outcome == UploadOutcome.AUTH_EXPIRED) {
             current = refreshOrRegister(current)
@@ -186,31 +211,83 @@ internal class AnonymousCredentialManager(
         outcome
     }
 
-    fun revokeAndDeleteLocally(): LocalRevocationResult = synchronized(lock) {
-        val current = store.load() ?: return@synchronized LocalRevocationResult.NOTHING_TO_REVOKE
-        val remote = runCatching { api.revoke(current.accessToken) }.getOrNull()
-        store.clear()
-        if (remote == RevocationOutcome.REVOKED || remote == RevocationOutcome.ALREADY_INVALID) {
-            LocalRevocationResult.CONFIRMED
-        } else {
-            LocalRevocationResult.LOCAL_ONLY
+    fun revokeAndDeleteLocally(): LocalRevocationResult =
+        CredentialOperationCoordinator.runExclusive {
+            val current = store.load()
+                ?: return@runExclusive LocalRevocationResult.NOTHING_TO_REVOKE
+            val usable = if (
+                revocationAccessAction(current, clock.instant()) == RevocationAccessAction.REFRESH
+            ) {
+                try {
+                    api.refresh(current.refreshToken)
+                } catch (_: Exception) {
+                    current
+                }
+            } else {
+                current
+            }
+            val remote = try {
+                api.revoke(usable.accessToken)
+            } catch (_: Exception) {
+                null
+            }
+            store.clear()
+            if (remote == RevocationOutcome.REVOKED) {
+                LocalRevocationResult.CONFIRMED
+            } else {
+                LocalRevocationResult.LOCAL_ONLY
+            }
+        }
+
+    private fun credentialsLocked(): AnonymousCredentials {
+        ensureCredentialCreationAllowed()
+        val stored = store.load()
+        return when (credentialAction(stored, clock.instant())) {
+            CredentialAction.USE_CURRENT -> checkNotNull(stored)
+            CredentialAction.REFRESH -> refreshOrRegister(checkNotNull(stored))
+            CredentialAction.REGISTER -> registerReplacingLocalState()
         }
     }
 
     private fun refreshOrRegister(current: AnonymousCredentials): AnonymousCredentials =
         try {
-            api.refresh(current.refreshToken).also(store::save)
+            persist(api.refresh(current.refreshToken))
         } catch (error: ApiUnavailable) {
             if (error.statusCode != 401) throw error
             registerReplacingLocalState()
         }
 
     private fun registerReplacingLocalState(): AnonymousCredentials {
+        ensureCredentialCreationAllowed()
         store.clear()
-        return api.register().also(store::save)
+        return persist(api.register())
     }
 
-    private companion object {
-        val lock = Any()
+    private fun persist(credentials: AnonymousCredentials): AnonymousCredentials {
+        if (!credentialCreationAllowed()) {
+            try {
+                api.revoke(credentials.accessToken)
+            } catch (_: Exception) {
+                // Local deletion still wins if the network disappears during deletion.
+            }
+            store.clear()
+            throw CredentialCreationDisabled()
+        }
+        try {
+            store.save(credentials)
+        } catch (error: Exception) {
+            try {
+                api.revoke(credentials.accessToken)
+            } catch (_: Exception) {
+                // The issued credentials expire server-side and never reach local storage.
+            }
+            store.clear()
+            throw error
+        }
+        return credentials
+    }
+
+    private fun ensureCredentialCreationAllowed() {
+        if (!credentialCreationAllowed()) throw CredentialCreationDisabled()
     }
 }

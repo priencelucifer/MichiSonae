@@ -46,6 +46,10 @@ must not become a new tracking store.
 
 ## Consequences
 
+- Android stores raw bearer credentials only inside an AES-GCM envelope whose
+  non-exportable key is held by Android Keystore. Refresh is serialized, rotated
+  credentials replace the prior envelope atomically, and local deletion remains
+  available when revocation cannot reach the backend.
 - A person can contribute without creating an account.
 - A database read alone cannot recover bearer credentials.
 - Legitimate clients that send the same refresh credential concurrently can

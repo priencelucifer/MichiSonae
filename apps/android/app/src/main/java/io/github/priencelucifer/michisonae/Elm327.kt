@@ -48,6 +48,7 @@ internal enum class Elm327ResponseStatus {
 internal data class Elm327Response(
     val status: Elm327ResponseStatus,
     val bytes: List<Int> = emptyList(),
+    val payloads: List<List<Int>> = emptyList(),
 )
 
 internal object Elm327Parser {
@@ -66,14 +67,21 @@ internal object Elm327Parser {
         }
         if (adapterStatus != null) return Elm327Response(adapterStatus)
 
-        val bytes = normalized
+        val frames = normalized
             .replace(Regex("SEARCHING\\.{0,3}"), "")
             .replace(">", "\n")
             .lineSequence()
-            .flatMap(::payloadBytes)
+            .mapNotNull(::frame)
             .toList()
+        val payloads = reassemble(frames)
+        val bytes = payloads.flatten()
         return when {
-            bytes.isNotEmpty() -> Elm327Response(Elm327ResponseStatus.DATA, bytes)
+            bytes.isNotEmpty() -> Elm327Response(
+                Elm327ResponseStatus.DATA,
+                bytes,
+                payloads,
+            )
+
             Regex("(^|[\\r\\n])\\s*OK\\s*([\\r\\n]|$)").containsMatchIn(normalized) ->
                 Elm327Response(Elm327ResponseStatus.OK)
 
@@ -150,13 +158,17 @@ internal object Elm327Parser {
     }
 
     fun troubleCodes(response: String): List<String> {
-        val bytes = response(response).bytes
-        val headerIndex = bytes.indexOf(0x43)
-        if (headerIndex < 0) return emptyList()
-        return bytes.drop(headerIndex + 1)
-            .chunked(2)
-            .takeWhile { it.size == 2 && (it[0] != 0 || it[1] != 0) }
-            .map { decodeTroubleCode(it[0], it[1]) }
+        return response(response).payloads.flatMap { payload ->
+            val headerIndex = payload.indexOf(0x43)
+            if (headerIndex < 0) {
+                emptyList()
+            } else {
+                payload.drop(headerIndex + 1)
+                    .chunked(2)
+                    .takeWhile { it.size == 2 && (it[0] != 0 || it[1] != 0) }
+                    .map { decodeTroubleCode(it[0], it[1]) }
+            }
+        }
     }
 
     private fun dataBytes(
@@ -165,10 +177,6 @@ internal object Elm327Parser {
         required: Int? = null,
     ): List<Int>? {
         val pid = command.mode01Pid ?: return null
-        val bytes = response(response).bytes
-        val headerIndex = bytes.indices.firstOrNull { index ->
-            index + 1 < bytes.size && bytes[index] == 0x41 && bytes[index + 1] == pid
-        } ?: return null
         val byteCount = required ?: when (command) {
             Elm327Command.ENGINE_RPM,
             Elm327Command.CONTROL_MODULE_VOLTAGE,
@@ -176,7 +184,16 @@ internal object Elm327Parser {
 
             else -> 1
         }
-        return bytes.drop(headerIndex + 2).take(byteCount).takeIf { it.size == byteCount }
+        return response(response).payloads.firstNotNullOfOrNull { payload ->
+            val headerIndex = payload.indices.firstOrNull { index ->
+                index + 1 < payload.size &&
+                    payload[index] == 0x41 &&
+                    payload[index + 1] == pid
+            } ?: return@firstNotNullOfOrNull null
+            payload.drop(headerIndex + 2)
+                .take(byteCount)
+                .takeIf { it.size == byteCount }
+        }
     }
 
     private fun decodeTroubleCode(first: Int, second: Int): String {
@@ -190,7 +207,19 @@ internal object Elm327Parser {
         }
     }
 
-    private fun payloadBytes(line: String): Sequence<Int> {
+    private data class Frame(
+        val source: String,
+        val bytes: List<Int>,
+    )
+
+    private data class Assembly(
+        val order: Int,
+        val size: Int,
+        var nextSequence: Int,
+        val bytes: MutableList<Int>,
+    )
+
+    private fun frame(line: String): Frame? {
         val clean = line.trim()
         if (
             clean.isEmpty() ||
@@ -199,44 +228,85 @@ internal object Elm327Parser {
             clean.matches(Regex("AT[A-Z0-9]+")) ||
             clean.matches(Regex("01[0-9A-F]{2}"))
         ) {
-            return emptySequence()
+            return null
         }
 
         val tokens = clean.split(Regex("\\s+")).filter(String::isNotEmpty)
-        val withoutHeader = if (
+        val spacedHeader = tokens.firstOrNull()?.takeIf {
             tokens.size > 1 &&
-            (tokens.first().matches(Regex("[0-9A-F]{3}")) ||
-                tokens.first().matches(Regex("[0-9A-F]{8}")))
-        ) {
-            tokens.drop(1)
-        } else {
-            tokens
+                (it.matches(Regex("[0-9A-F]{3}")) ||
+                    it.matches(Regex("[0-9A-F]{8}")))
         }
-        val compact = withoutHeader.joinToString("")
+        var compact = tokens.drop(if (spacedHeader == null) 0 else 1)
+            .joinToString("")
             .filter { it in '0'..'9' || it in 'A'..'F' }
-        val payloadHex = when {
+        val compactHeader = when {
             compact.length >= 5 &&
                 compact.length % 2 == 1 &&
-                compact.take(3).matches(Regex("[0-9A-F]{3}")) -> compact.drop(3)
+                compact.take(3).matches(Regex("[0-9A-F]{3}")) -> compact.take(3)
 
-            compact.length % 2 == 0 -> compact
-            else -> return emptySequence()
+            compact.length >= 12 &&
+                compact.length % 2 == 0 &&
+                compact.startsWith("18") -> compact.take(8)
+
+            else -> null
         }
-        val bytes = payloadHex
+        if (compactHeader != null) compact = compact.drop(compactHeader.length)
+        if (compact.length % 2 != 0) return null
+        val bytes = compact
             .chunked(2)
             .mapNotNull { it.takeIf { pair -> pair.length == 2 }?.toIntOrNull(16) }
-        if (bytes.isEmpty()) return emptySequence()
-
-        val payload = when {
-            bytes.first() shr 4 == 0 && (bytes.first() and 0x0F) <= bytes.size - 1 ->
-                bytes.drop(1).take(bytes.first() and 0x0F)
-
-            bytes.first() shr 4 == 1 && bytes.size >= 2 -> bytes.drop(2)
-            bytes.first() shr 4 == 2 -> bytes.drop(1)
-            bytes.first() <= bytes.size - 1 -> bytes.drop(1).take(bytes.first())
-            else -> bytes
+        return bytes.takeIf { it.isNotEmpty() }?.let {
+            Frame(spacedHeader ?: compactHeader ?: "NO_HEADER", it)
         }
-        return payload.asSequence()
+    }
+
+    private fun reassemble(frames: List<Frame>): List<List<Int>> {
+        val pending = mutableMapOf<String, Assembly>()
+        val complete = mutableListOf<Pair<Int, List<Int>>>()
+        frames.forEachIndexed { order, frame ->
+            val first = frame.bytes.first()
+            when (first shr 4) {
+                0 -> {
+                    pending.remove(frame.source)
+                    val size = first and 0x0F
+                    if (size <= frame.bytes.size - 1) {
+                        complete += order to frame.bytes.drop(1).take(size)
+                    }
+                }
+
+                1 -> if (frame.bytes.size >= 2) {
+                    val size = ((first and 0x0F) shl 8) or frame.bytes[1]
+                    val data = frame.bytes.drop(2).take(size).toMutableList()
+                    if (data.size == size) {
+                        complete += order to data
+                    } else {
+                        pending[frame.source] = Assembly(order, size, 1, data)
+                    }
+                }
+
+                2 -> {
+                    val assembly = pending[frame.source]
+                    val sequence = first and 0x0F
+                    if (assembly != null && sequence == assembly.nextSequence) {
+                        assembly.bytes += frame.bytes.drop(1)
+                        assembly.nextSequence = (assembly.nextSequence + 1) and 0x0F
+                        if (assembly.bytes.size >= assembly.size) {
+                            complete += assembly.order to assembly.bytes.take(assembly.size)
+                            pending.remove(frame.source)
+                        }
+                    } else {
+                        pending.remove(frame.source)
+                    }
+                }
+
+                else -> {
+                    pending.remove(frame.source)
+                    complete += order to frame.bytes
+                }
+            }
+        }
+        return complete.sortedBy { it.first }.map { it.second }
     }
 }
 

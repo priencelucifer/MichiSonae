@@ -44,6 +44,29 @@ class Elm327Test {
     }
 
     @Test
+    fun keepsRepliesFromTwoEcusIndependent() {
+        assertEquals(
+            listOf("P0133", "P0210"),
+            Elm327Parser.troubleCodes(
+                "7E8 03 43 01 33\r7E9 03 43 02 10\r>",
+            ),
+        )
+    }
+
+    @Test
+    fun reassemblesInterleavedIsoTpFramesByCanSource() {
+        assertEquals(
+            listOf("P0133", "P0210", "P0300", "P0420"),
+            Elm327Parser.troubleCodes(
+                "7E8 10 07 43 01 33 02 10 03\r" +
+                    "7E9 10 07 43 04 20 00 00 00\r" +
+                    "7E8 21 00\r" +
+                    "7E9 21 00\r>",
+            ),
+        )
+    }
+
+    @Test
     fun normalizesCheapCloneEchoHeadersLengthAndCompactFrames() {
         val response = "010C\rSEARCHING...\r7E8 04 41 0C 1A F8\r>"
         assertEquals(

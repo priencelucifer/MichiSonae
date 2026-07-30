@@ -24,14 +24,21 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
     private val drivingDetector = AutomaticDrivingDetector()
     private val roadDetector = PhoneRoadHazardDetector()
     private val storageExecutor = Executors.newSingleThreadExecutor()
+    private val networkExecutor = Executors.newSingleThreadExecutor()
+    private val publicHazardWarningGate = PublicHazardWarningGate()
     private lateinit var warningPlayer: DriverWarningPlayer
     private lateinit var observationQueue: OfflineObservationQueue
     private lateinit var sensorManager: SensorManager
     private lateinit var locationManager: LocationManager
     private lateinit var vehicleClass: VehicleClass
+    private var nearbyHazards: NearbyHazardSnapshots? = null
+    @Volatile
+    private var cachedHazards: RegionalHazardSnapshot? = null
     private var drivingState = DrivingState.IDLE
     private var lastLocation: Location? = null
     private var lastWarningAt = Long.MIN_VALUE
+    private var lastSnapshotRegion: String? = null
+    private var lastSnapshotRefreshAt = Long.MIN_VALUE
 
     override fun onCreate() {
         super.onCreate()
@@ -50,7 +57,17 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         vehicleClass = profile.vehicleClass
         warningPlayer = DriverWarningPlayer(this)
         OfflineObservationQueue.resumeAcceptingObservations()
+        HazardSnapshotCache.resumeAcceptingSnapshots()
         observationQueue = OfflineObservationQueue(this)
+        cachedHazards = HazardSnapshotCache(this).read()
+        BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)?.let { baseUrl ->
+            nearbyHazards = NearbyHazardSnapshots(this, baseUrl)
+            storageExecutor.execute {
+                if (observationQueue.pendingCount() > 0) {
+                    runCatching { ObservationSyncScheduler.schedule(this, baseUrl) }
+                }
+            }
+        }
         sensorManager = getSystemService(SensorManager::class.java)
         locationManager = getSystemService(LocationManager::class.java)
         startMonitoring()
@@ -69,6 +86,10 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
                 speedKph = location.speed.coerceAtLeast(0f) * 3.6,
             ),
         )
+        if (drivingState == DrivingState.DRIVING) {
+            refreshNearbyHazards(location)
+            warnForCachedHazard(location)
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -99,6 +120,9 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         val observation = hazard.toObservation(location)
         storageExecutor.execute {
             observationQueue.enqueue(observation)
+            BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)?.let { baseUrl ->
+                runCatching { ObservationSyncScheduler.schedule(this, baseUrl) }
+            }
         }
     }
 
@@ -109,6 +133,7 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         if (::locationManager.isInitialized) locationManager.removeUpdates(this)
         if (::warningPlayer.isInitialized) warningPlayer.close()
         storageExecutor.shutdown()
+        networkExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -146,6 +171,46 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
             detectorVersion = "phone-v1",
         )
 
+    private fun refreshNearbyHazards(location: Location) {
+        val snapshots = nearbyHazards ?: return
+        val region = regionalHazardId(location.latitude, location.longitude)
+        val now = SystemClock.elapsedRealtime()
+        if (
+            region == lastSnapshotRegion &&
+            lastSnapshotRefreshAt != Long.MIN_VALUE &&
+            now - lastSnapshotRefreshAt < SNAPSHOT_REFRESH_INTERVAL_MILLIS
+        ) {
+            return
+        }
+        lastSnapshotRegion = region
+        lastSnapshotRefreshAt = now
+        networkExecutor.execute {
+            val refreshed = snapshots.refresh(location.latitude, location.longitude).snapshot
+            if (refreshed?.regionId == region) cachedHazards = refreshed
+        }
+    }
+
+    private fun warnForCachedHazard(location: Location) {
+        val warning = cachedHazards?.let { snapshot ->
+            findUpcomingHazard(
+                snapshot = snapshot,
+                latitude = location.latitude,
+                longitude = location.longitude,
+                headingDegrees = location.bearing
+                    .toDouble()
+                    .takeIf { location.hasBearing() },
+            )
+        }
+        if (
+            publicHazardWarningGate.shouldWarn(
+                warning,
+                SystemClock.elapsedRealtime(),
+            )
+        ) {
+            warningPlayer.warn(checkNotNull(warning).message)
+        }
+    }
+
     private fun hasLocationPermission(): Boolean =
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED ||
@@ -176,5 +241,6 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         const val NOTIFICATION_ID = 1001
         const val LOCATION_INTERVAL_MILLIS = 1_000L
         const val WARNING_COOLDOWN_MILLIS = 8_000L
+        const val SNAPSHOT_REFRESH_INTERVAL_MILLIS = 15 * 60 * 1_000L
     }
 }

@@ -18,6 +18,7 @@ internal fun estimateFuelRange(
     source: FuelLevelSource,
     uncertaintyBuffer: Double = 0.2,
 ): FuelRangeEstimate {
+    require(profile.validationError() == null)
     require(fuelPercent in 0.0..100.0)
     require(uncertaintyBuffer in 0.0..0.5)
     val estimate = profile.tankCapacityLitres *
@@ -67,6 +68,9 @@ internal object FuelCoverageGuardian {
         stationsAhead: List<FuelStationAhead>,
         remainingRouteKm: Double,
     ): FuelAdvice {
+        require(estimate.fuelPercent in 0.0..100.0)
+        require(estimate.bestEstimateKm.isFinite() && estimate.bestEstimateKm >= 0.0)
+        require(estimate.conservativeKm.isFinite() && estimate.conservativeKm >= 0.0)
         require(remainingRouteKm.isFinite() && remainingRouteKm >= 0.0)
         val stations = stationsAhead
             .onEach {

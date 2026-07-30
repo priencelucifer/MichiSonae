@@ -14,6 +14,32 @@ internal data class OfflineHazardWarning(
     val message: String,
 )
 
+internal class PublicHazardWarningGate(
+    private val cooldownMillis: Long = 30_000,
+) {
+    private var lastObservedAtMillis: Long? = null
+    private var lastWarningAtMillis: Long? = null
+
+    init {
+        require(cooldownMillis > 0)
+    }
+
+    fun shouldWarn(
+        warning: OfflineHazardWarning?,
+        elapsedRealtimeMillis: Long,
+    ): Boolean {
+        require(elapsedRealtimeMillis >= 0)
+        require(lastObservedAtMillis == null || elapsedRealtimeMillis >= lastObservedAtMillis!!)
+        lastObservedAtMillis = elapsedRealtimeMillis
+        if (warning == null) return false
+        val allowed = lastWarningAtMillis?.let {
+            elapsedRealtimeMillis - it >= cooldownMillis
+        } ?: true
+        if (allowed) lastWarningAtMillis = elapsedRealtimeMillis
+        return allowed
+    }
+}
+
 internal fun findUpcomingHazard(
     snapshot: RegionalHazardSnapshot,
     latitude: Double,

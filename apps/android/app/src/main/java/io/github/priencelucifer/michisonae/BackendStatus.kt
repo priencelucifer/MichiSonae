@@ -16,13 +16,15 @@ internal data class BackendStatus(
 internal fun backendStatus(
     pendingUploadCount: Int,
     hasNetwork: Boolean,
-    lastSyncFailed: Boolean,
+    lastSyncFailureAtMillis: Long?,
     hasCachedSnapshot: Boolean,
     snapshotGeneratedAtMillis: Long?,
     nowMillis: Long,
+    backendConfigured: Boolean = true,
 ): BackendStatus {
     require(pendingUploadCount >= 0)
     require(nowMillis >= 0)
+    require(lastSyncFailureAtMillis == null || lastSyncFailureAtMillis >= 0)
     val freshness = when {
         !hasCachedSnapshot || snapshotGeneratedAtMillis == null ->
             SnapshotFreshness.NOT_AVAILABLE
@@ -35,9 +37,11 @@ internal fun backendStatus(
     }
     return BackendStatus(
         connectionLabel = when {
+            !backendConfigured -> "Backend endpoint is not configured yet."
             !hasNetwork -> "Offline — saved hazard warnings remain available."
-            lastSyncFailed -> "Sync delayed — saved hazard warnings remain available."
-            else -> "Backend connected."
+            lastSyncFailureAtMillis != null ->
+                "Sync delayed — saved hazard warnings remain available."
+            else -> "Network available for background sync."
         },
         uploadLabel = if (pendingUploadCount == 0) {
             "All road reports uploaded."

@@ -1,6 +1,7 @@
 package io.github.priencelucifer.michisonae
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -82,6 +83,29 @@ class FuelCoverageGuardianTest {
 
         assertEquals(FuelAdviceLevel.ENOUGH_RANGE, advice.level)
         assertTrue(advice.message.contains("Estimate only"))
+    }
+
+    @Test
+    fun rejectsInvalidVehicleProfileAndRangeEstimate() {
+        assertThrows(IllegalArgumentException::class.java) {
+            estimateFuelRange(
+                profile.copy(efficiencyKmPerLitre = Double.NaN),
+                25.0,
+                FuelLevelSource.MANUAL,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            FuelCoverageGuardian.evaluate(
+                estimate = FuelRangeEstimate(
+                    fuelPercent = 25.0,
+                    bestEstimateKm = 100.0,
+                    conservativeKm = Double.NaN,
+                    source = FuelLevelSource.MANUAL,
+                ),
+                stationsAhead = emptyList(),
+                remainingRouteKm = 10.0,
+            )
+        }
     }
 
     @Test

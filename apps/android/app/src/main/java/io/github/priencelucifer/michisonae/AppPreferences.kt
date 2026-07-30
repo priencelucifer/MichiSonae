@@ -41,7 +41,7 @@ internal class AppPreferences(context: Context) {
                 efficiencyKmPerLitre = Double.fromBits(
                     preferences.getLong(KEY_FUEL_EFFICIENCY, 0L),
                 ),
-            )
+            ).takeIf { it.validationError() == null }
         }.getOrNull()
     }
 

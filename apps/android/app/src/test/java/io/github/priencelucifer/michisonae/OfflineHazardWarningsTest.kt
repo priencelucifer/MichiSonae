@@ -48,4 +48,27 @@ class OfflineHazardWarningsTest {
             )?.hazard?.id,
         )
     }
+
+    @Test
+    fun cooldownSurvivesMissesAndAlternatingHazardIds() {
+        val first = findUpcomingHazard(snapshot, 26.1445, 91.7362, 0.0)
+        val second = findUpcomingHazard(snapshot, 26.1445, 91.7362, 100.0)
+        val gate = PublicHazardWarningGate(cooldownMillis = 30_000)
+
+        assertTrue(gate.shouldWarn(first, elapsedRealtimeMillis = 1_000))
+        assertEquals(false, gate.shouldWarn(null, elapsedRealtimeMillis = 2_000))
+        assertEquals(false, gate.shouldWarn(second, elapsedRealtimeMillis = 3_000))
+        assertTrue(gate.shouldWarn(second, elapsedRealtimeMillis = 31_000))
+    }
+
+    @Test
+    fun cooldownRejectsNonMonotonicTime() {
+        val warning = findUpcomingHazard(snapshot, 26.1445, 91.7362, 0.0)
+        val gate = PublicHazardWarningGate()
+        gate.shouldWarn(warning, elapsedRealtimeMillis = 10_000)
+
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            gate.shouldWarn(warning, elapsedRealtimeMillis = 9_999)
+        }
+    }
 }

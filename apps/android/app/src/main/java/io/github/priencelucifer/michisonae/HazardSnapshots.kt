@@ -2,13 +2,18 @@ package io.github.priencelucifer.michisonae
 
 import android.content.Context
 import android.util.AtomicFile
+import java.io.ByteArrayOutputStream
+import java.io.FileNotFoundException
+import java.io.InputStream
 import java.net.HttpURLConnection
-import java.net.URI
 import java.net.URL
 import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import org.json.JSONObject
+
+internal const val MAX_HAZARD_SNAPSHOT_BYTES = 1_048_576
+internal const val MAX_HAZARDS_PER_SNAPSHOT = 5_000
 
 internal enum class PublicHazardKind(val wireName: String) {
     ROAD_DAMAGE("road_damage"),
@@ -53,14 +58,19 @@ internal data class RegionalHazardSnapshot(
         require(region != null && region.groupValues[1].toInt() == region.groupValues[2].length)
         require(version == null || version.matches(Regex("[0-9a-f]{64}")))
         require(generatedAtMillis == null || generatedAtMillis >= 0)
+        require(hazards.size <= MAX_HAZARDS_PER_SNAPSHOT)
     }
 }
 
 internal fun parseRegionalHazardSnapshot(serialized: String): RegionalHazardSnapshot {
+    require(serialized.length <= MAX_HAZARD_SNAPSHOT_BYTES)
+    require(serialized.toByteArray(Charsets.UTF_8).size <= MAX_HAZARD_SNAPSHOT_BYTES)
     val root = JSONObject(serialized)
     require(root.getString("schema_version") == "1.0")
     val hazardsJson = root.getJSONArray("hazards")
-    require(root.getInt("hazard_count") == hazardsJson.length())
+    val hazardCount = root.getInt("hazard_count")
+    require(hazardCount in 0..MAX_HAZARDS_PER_SNAPSHOT)
+    require(hazardCount == hazardsJson.length())
     val hazards = List(hazardsJson.length()) { index ->
         val hazard = hazardsJson.getJSONObject(index)
         PublicRoadHazard(
@@ -139,15 +149,7 @@ internal sealed interface HazardSnapshotDownload {
 }
 
 internal class HazardSnapshotClient(baseUrl: String) {
-    private val baseUrl = baseUrl.trimEnd('/').also {
-        val uri = URI(it)
-        require(
-            uri.scheme == "https" ||
-                (uri.scheme == "http" && uri.host in setOf("localhost", "127.0.0.1")),
-        ) {
-            "The API must use HTTPS outside local development"
-        }
-    }
+    private val baseUrl = validatedApiBaseUrl(baseUrl)
 
     fun download(regionId: String, knownVersion: String?): HazardSnapshotDownload {
         require(RegionalHazardSnapshot(regionId, knownVersion, null, emptyList()).regionId == regionId)
@@ -164,7 +166,7 @@ internal class HazardSnapshotClient(baseUrl: String) {
             when (val status = connection.responseCode) {
                 HttpURLConnection.HTTP_NOT_MODIFIED -> HazardSnapshotDownload.NotModified
                 HttpURLConnection.HTTP_OK -> {
-                    val serialized = connection.inputStream.bufferedReader().use { it.readText() }
+                    val serialized = connection.inputStream.use { it.readUtf8Bounded() }
                     val snapshot = parseRegionalHazardSnapshot(serialized)
                     require(snapshot.regionId == regionId)
                     HazardSnapshotDownload.Updated(serialized, snapshot)
@@ -179,18 +181,24 @@ internal class HazardSnapshotClient(baseUrl: String) {
 }
 
 internal class HazardSnapshotCache(context: Context) {
+    // ponytail: one current region; add adjacent-cell prefetch only after field evidence needs it.
     private val file = AtomicFile(context.filesDir.resolve("nearby-hazard-snapshot.json"))
 
     fun read(): RegionalHazardSnapshot? = lock.withLock {
-        if (!file.baseFile.exists()) return null
+        val input = try {
+            file.openRead()
+        } catch (_: FileNotFoundException) {
+            return null
+        }
         runCatching {
-            file.openRead().bufferedReader().use { parseRegionalHazardSnapshot(it.readText()) }
+            input.use { parseRegionalHazardSnapshot(it.readUtf8Bounded()) }
         }.getOrNull()
     }
 
     fun replace(serialized: String): RegionalHazardSnapshot {
         val snapshot = parseRegionalHazardSnapshot(serialized)
         lock.withLock {
+            check(acceptingSnapshots) { "Hazard snapshot storage is disabled" }
             val output = file.startWrite()
             try {
                 output.write(serialized.toByteArray(Charsets.UTF_8))
@@ -203,10 +211,20 @@ internal class HazardSnapshotCache(context: Context) {
         return snapshot
     }
 
-    fun clear() = lock.withLock { file.delete() }
+    fun clear() = lock.withLock {
+        acceptingSnapshots = false
+        file.delete()
+    }
 
     companion object {
         private val lock = ReentrantLock()
+
+        @Volatile
+        private var acceptingSnapshots = true
+
+        fun resumeAcceptingSnapshots() = lock.withLock {
+            acceptingSnapshots = true
+        }
     }
 }
 
@@ -246,7 +264,7 @@ internal class NearbyHazardSnapshots(
                     )
             }
         } catch (_: Exception) {
-            HazardRefreshResult(existing, changed = false, error = true)
+            HazardRefreshResult(cache.read(), changed = false, error = true)
         }
     }
 
@@ -255,3 +273,19 @@ internal class NearbyHazardSnapshots(
 
 internal class HazardSnapshotUnavailable(val statusCode: Int) :
     Exception("Hazard snapshot request failed")
+
+private fun InputStream.readUtf8Bounded(): String {
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(8_192)
+    var total = 0
+    while (true) {
+        val count = read(buffer)
+        if (count < 0) break
+        total += count
+        require(total <= MAX_HAZARD_SNAPSHOT_BYTES) {
+            "Hazard snapshot response is too large"
+        }
+        output.write(buffer, 0, count)
+    }
+    return output.toString(Charsets.UTF_8.name())
+}

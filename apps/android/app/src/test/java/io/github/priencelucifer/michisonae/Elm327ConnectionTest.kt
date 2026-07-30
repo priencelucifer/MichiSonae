@@ -60,4 +60,31 @@ class Elm327ConnectionTest {
         assertEquals(Elm327Command.DISABLE_ECHO, send.command)
         assertTrue(send.command.isAllowedReadOnlyCommand())
     }
+
+    @Test
+    fun stoppedIgnoresStaleFailureAndRetryEvents() {
+        listOf(
+            Elm327ConnectionEvent.ConnectionFailed("late socket failure"),
+            Elm327ConnectionEvent.RetryElapsed,
+        ).forEach { event ->
+            assertEquals(
+                Elm327Transition(Elm327ConnectionState.Stopped),
+                Elm327ConnectionMachine.transition(Elm327ConnectionState.Stopped, event),
+            )
+        }
+    }
+
+    @Test
+    fun stoppedClosesSocketThatConnectsLate() {
+        assertEquals(
+            Elm327Transition(
+                Elm327ConnectionState.Stopped,
+                listOf(Elm327ConnectionAction.CloseSocket),
+            ),
+            Elm327ConnectionMachine.transition(
+                Elm327ConnectionState.Stopped,
+                Elm327ConnectionEvent.SocketConnected,
+            ),
+        )
+    }
 }
