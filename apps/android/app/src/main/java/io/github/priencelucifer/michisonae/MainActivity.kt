@@ -50,6 +50,7 @@ internal fun MichiSonaeApp() {
     var vehicleProfile by remember { mutableStateOf(preferences.loadVehicleProfile()) }
     var isEditingVehicle by rememberSaveable { mutableStateOf(false) }
     var isDrivingDemoOpen by rememberSaveable { mutableStateOf(false) }
+    var isVehicleDemoOpen by rememberSaveable { mutableStateOf(false) }
 
     when {
         !hasConsent -> OnboardingScreen {
@@ -73,10 +74,16 @@ internal fun MichiSonaeApp() {
             onBack = { isDrivingDemoOpen = false },
         )
 
+        isVehicleDemoOpen -> VehicleDemoScreen(
+            profile = checkNotNull(vehicleProfile),
+            onBack = { isVehicleDemoOpen = false },
+        )
+
         else -> HomeScreen(
             profile = checkNotNull(vehicleProfile),
             onEditVehicle = { isEditingVehicle = true },
             onOpenDrivingDemo = { isDrivingDemoOpen = true },
+            onOpenVehicleDemo = { isVehicleDemoOpen = true },
         )
     }
 }
@@ -272,6 +279,7 @@ private fun HomeScreen(
     profile: VehicleProfile,
     onEditVehicle: () -> Unit,
     onOpenDrivingDemo: () -> Unit,
+    onOpenVehicleDemo: () -> Unit,
 ) {
     Page {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -287,13 +295,13 @@ private fun HomeScreen(
             )
             CapabilityCard(
                 name = "Read-only OBD-II",
-                detail = "Optional adapter; never writes to the car",
-                capability = Capability.PLANNED,
+                detail = "Read-only ELM327 simulator; never writes to the car",
+                capability = Capability.AVAILABLE,
             )
             CapabilityCard(
                 name = "Fuel Coverage Guardian",
-                detail = "Range and upcoming-station estimates",
-                capability = Capability.PLANNED,
+                detail = "Conservative range and upcoming-station simulation",
+                capability = Capability.AVAILABLE,
             )
             OutlinedButton(
                 onClick = onOpenDrivingDemo,
@@ -302,10 +310,125 @@ private fun HomeScreen(
                 Text("Try phone detection demo")
             }
             OutlinedButton(
+                onClick = onOpenVehicleDemo,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Try OBD and fuel demo")
+            }
+            OutlinedButton(
                 onClick = onEditVehicle,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Edit vehicle")
+            }
+        }
+    }
+}
+
+@Composable
+private fun VehicleDemoScreen(
+    profile: VehicleProfile,
+    onBack: () -> Unit,
+) {
+    var manualFuelPercent by rememberSaveable { mutableStateOf("") }
+    var showGauges by rememberSaveable { mutableStateOf(false) }
+    val fuelReading = checkNotNull(
+        Elm327Parser.reading(
+            Elm327Command.FUEL_LEVEL,
+            Elm327Simulator.response(Elm327Command.FUEL_LEVEL),
+        ),
+    )
+    val manualValue = manualFuelPercent.toDoubleOrNull()
+    val usesManualValue = manualValue != null && manualValue in 0.0..100.0
+    val estimate = estimateFuelRange(
+        profile = profile,
+        fuelPercent = if (usesManualValue) checkNotNull(manualValue) else fuelReading.value,
+        source = if (usesManualValue) FuelLevelSource.MANUAL else FuelLevelSource.OBD,
+    )
+    val advice = FuelCoverageGuardian.evaluate(
+        estimate = estimate,
+        stationsAhead = listOf(
+            FuelStationAhead(
+                name = "Upcoming fuel pump",
+                distanceAheadKm = estimate.conservativeKm * 0.25,
+                isOpen = true,
+            ),
+            FuelStationAhead(
+                name = "Following fuel pump",
+                distanceAheadKm = estimate.conservativeKm * 1.25,
+                isOpen = null,
+            ),
+        ),
+        remainingRouteKm = estimate.conservativeKm * 2,
+    )
+    val diagnosticCode = Elm327Parser.troubleCodes(
+        Elm327Simulator.response(Elm327Command.READ_TROUBLE_CODES),
+    ).first()
+    val finding = DiagnosticPolicy.interpret(diagnosticCode)
+
+    Page {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Vehicle demo", style = MaterialTheme.typography.headlineMedium)
+            Text("Simulated cheap ELM327 adapter. Every command is read-only.")
+            CapabilityCard(
+                name = "Diagnostic $diagnosticCode",
+                detail = "${finding.title}. ${finding.safeAction}",
+                capability = Capability.DEGRADED,
+            )
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Fuel Coverage Guardian", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${estimate.fuelPercent.toInt()}% fuel from " +
+                            "${estimate.source.displayName} • about " +
+                            "${estimate.conservativeKm.toInt()} km conservative range",
+                    )
+                    Text("Estimate only. Actual range changes with traffic and driving.")
+                    Text(advice.message, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            DecimalField(
+                value = manualFuelPercent,
+                onValueChange = { manualFuelPercent = it },
+                label = "Manual fuel % (optional)",
+            )
+            if (manualFuelPercent.isNotBlank() && !usesManualValue) {
+                Text(
+                    "Manual fuel must be between 0 and 100%.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            OutlinedButton(
+                onClick = { showGauges = !showGauges },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (showGauges) "Hide detailed gauges" else "Show detailed gauges")
+            }
+            if (showGauges) {
+                listOf(
+                    Elm327Command.ENGINE_RPM,
+                    Elm327Command.VEHICLE_SPEED,
+                    Elm327Command.COOLANT_TEMPERATURE,
+                    Elm327Command.CONTROL_MODULE_VOLTAGE,
+                ).forEach { command ->
+                    val reading = checkNotNull(
+                        Elm327Parser.reading(command, Elm327Simulator.response(command)),
+                    )
+                    Text("${reading.label}: ${reading.value} ${reading.unit}")
+                }
+            }
+            Text(
+                "If an adapter does not support fuel level, the same calculation accepts a " +
+                    "manual fuel percentage.",
+            )
+            OutlinedButton(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Back")
             }
         }
     }
