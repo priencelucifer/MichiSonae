@@ -10,6 +10,9 @@ Native Kotlin/Jetpack Compose application.
 - deterministic automatic-driving and phone road-detection demo
 - atomic offline road-observation queue
 - HTTPS anonymous registration, single-flight refresh and durable upload client
+- strict read-only ELM327 command parser and simulator
+- deterministic diagnostic safe-action policy
+- manual/OBD fuel range and route fuel-coverage simulation
 
 The app does not store trip history. The installation identity and vehicle
 profile remain on the phone until the backend authentication slice explicitly
@@ -23,6 +26,11 @@ Queued observations contain only the event contract fields, never raw sensor
 samples or trip sequences. An item is removed only after the API returns a
 balanced `202` durable-acceptance response. The API client is intentionally not
 connected to a production endpoint until deployment supplies one.
+
+The OBD demo cannot send arbitrary commands: its enum contains only adapter
+setup, live Mode 01 reads, and Mode 03 trouble-code reads. It contains no Mode
+04 clearing, coding, actuation, or manufacturer write path. Fuel calculations
+use a 20% uncertainty buffer and are always labelled as estimates.
 
 ## Planned modules
 
