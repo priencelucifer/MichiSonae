@@ -13,6 +13,8 @@ Native Kotlin/Jetpack Compose application.
 - strict read-only ELM327 command parser and simulator
 - deterministic diagnostic safe-action policy
 - manual/OBD fuel range and route fuel-coverage simulation
+- screen-off foreground phone monitoring using GPS speed and linear acceleration
+- local English TTS, alert tone, vibration and transient music pause/resume
 
 The app does not store trip history. The installation identity and vehicle
 profile remain on the phone until the backend authentication slice explicitly
@@ -31,6 +33,12 @@ The OBD demo cannot send arbitrary commands: its enum contains only adapter
 setup, live Mode 01 reads, and Mode 03 trouble-code reads. It contains no Mode
 04 clearing, coding, actuation, or manufacturer write path. Fuel calculations
 use a 20% uncertainty buffer and are always labelled as estimates.
+
+Android location permission is requested once before monitoring starts. A
+low-priority foreground notification keeps detection alive with the screen off.
+The service stores coordinates only for a detected hazard event; it does not
+record ordinary locations or construct trip history. Android may require the
+app to be opened once again after a phone restart before monitoring resumes.
 
 ## Planned modules
 

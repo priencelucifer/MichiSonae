@@ -99,4 +99,18 @@ class DrivingDetectionTest {
             ),
         )
     }
+
+    @Test
+    fun phoneOrientationIndependentAccelerationIsConvertedToG() {
+        assertEquals(
+            1.0,
+            linearAccelerationMagnitudeG(9.80665f, 0f, 0f),
+            0.0001,
+        )
+        assertEquals(
+            1.0,
+            linearAccelerationMagnitudeG(0f, 0f, 9.80665f),
+            0.0001,
+        )
+    }
 }
