@@ -69,6 +69,7 @@ internal class Elm327BluetoothClient private constructor(
     companion object {
         private const val MAX_RESPONSE_CHARS = 8_192
         private const val QUERY_TIMEOUT_MS = 5_000L
+        private const val CONNECT_TIMEOUT_MS = 10_000L
         private val TIMEOUT_TIMER = Timer("elm327-timeouts", true)
         private val SERIAL_PORT_UUID: UUID =
             UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
@@ -76,12 +77,27 @@ internal class Elm327BluetoothClient private constructor(
         @SuppressLint("MissingPermission")
         fun connect(device: BluetoothDevice): Elm327BluetoothClient {
             val socket = device.createRfcommSocketToServiceRecord(SERIAL_PORT_UUID)
+            val timedOut = AtomicBoolean()
+            val timeout = object : TimerTask() {
+                override fun run() {
+                    timedOut.set(true)
+                    runCatching(socket::close)
+                }
+            }
+            TIMEOUT_TIMER.schedule(timeout, CONNECT_TIMEOUT_MS)
             return try {
                 socket.connect()
                 Elm327BluetoothClient(socket)
             } catch (failure: Exception) {
                 runCatching(socket::close)
+                if (timedOut.get()) {
+                    throw SocketTimeoutException("ELM327 connection timed out").apply {
+                        initCause(failure)
+                    }
+                }
                 throw failure
+            } finally {
+                timeout.cancel()
             }
         }
     }

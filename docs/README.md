@@ -11,6 +11,8 @@
 - [ADR 0007: guarded data lifecycle and rebuilds](adr/0007-guarded-data-lifecycle-and-rebuilds.md)
 - [ADR 0008: bounded observability and shutdown](adr/0008-bounded-observability-and-shutdown.md)
 - [ADR 0009: immutable role-separated deployment](adr/0009-immutable-role-separated-deployment.md)
+- [ADR 0010: Android resilience and read-only OBD](adr/0010-android-resilience-and-read-only-obd.md)
+- [ADR 0011: stopped manual hazards and local assistance](adr/0011-stopped-manual-hazards-and-local-assistance.md)
 - [PostgreSQL backup and recovery runbook](operations/BACKUP_RESTORE.md)
 - [Backend observability guide](operations/OBSERVABILITY.md)
 - [Backend incident runbooks](operations/INCIDENTS.md)

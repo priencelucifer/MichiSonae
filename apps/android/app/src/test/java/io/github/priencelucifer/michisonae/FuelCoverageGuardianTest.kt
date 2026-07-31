@@ -86,6 +86,109 @@ class FuelCoverageGuardianTest {
     }
 
     @Test
+    fun staleObdReadingMakesNoRangeClaim() {
+        val estimate = estimateFuelRange(
+            profile,
+            FuelLevelSample(
+                percent = 25.0,
+                source = FuelLevelSource.OBD,
+                observedAtEpochMillis = 1_000,
+            ),
+            validForMillis = 1_000,
+        )
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimate,
+            stationsAhead = emptyList(),
+            remainingRouteKm = 10.0,
+            evaluatedAtEpochMillis = 2_001,
+        )
+
+        assertEquals(FuelAdviceLevel.FUEL_DATA_UNAVAILABLE, advice.level)
+        assertTrue(advice.message.contains("stale"))
+        assertTrue(advice.message.contains("manually"))
+    }
+
+    @Test
+    fun staleHoursBecomeUnknownAndOfflineCacheIsDisclosed() {
+        val estimate = estimateFuelRange(profile, 10.0, FuelLevelSource.OBD)
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimate,
+            stationsAhead = listOf(
+                FuelStationAhead(
+                    name = "Cached station",
+                    distanceAheadKm = 20.0,
+                    isOpen = true,
+                    hoursCheckedAtEpochMillis = 1_000,
+                ),
+            ),
+            remainingRouteKm = 100.0,
+            evaluatedAtEpochMillis = 8_000_000,
+            stationDataUpdatedAtEpochMillis = 7_999_000,
+            isOffline = true,
+        )
+
+        assertEquals(FuelAdviceLevel.FUEL_AT_UPCOMING_STATION, advice.level)
+        assertTrue(advice.message.contains("unknown opening status"))
+        assertTrue(advice.message.contains("offline"))
+    }
+
+    @Test
+    fun offlineWithoutCachedStationsMakesNoReachabilityClaim() {
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimateFuelRange(profile, 2.0, FuelLevelSource.MANUAL),
+            stationsAhead = emptyList(),
+            remainingRouteKm = 100.0,
+            evaluatedAtEpochMillis = 5_000,
+            isOffline = true,
+        )
+
+        assertEquals(FuelAdviceLevel.STATION_DATA_UNAVAILABLE, advice.level)
+    }
+
+    @Test
+    fun staleStationLocationsAreNotUsedForFuelAdvice() {
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimateFuelRange(profile, 2.0, FuelLevelSource.MANUAL),
+            stationsAhead = listOf(FuelStationAhead("Old station", 5.0, true)),
+            remainingRouteKm = 100.0,
+            evaluatedAtEpochMillis = 100_000_000,
+            stationDataUpdatedAtEpochMillis = 1_000,
+        )
+
+        assertEquals(FuelAdviceLevel.STATION_DATA_UNAVAILABLE, advice.level)
+        assertTrue(advice.message.contains("too old"))
+    }
+
+    @Test
+    fun missingStationUpdateTimeMakesNoReachabilityClaim() {
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimateFuelRange(profile, 10.0, FuelLevelSource.MANUAL),
+            stationsAhead = listOf(FuelStationAhead("Unverified station", 20.0, true)),
+            remainingRouteKm = 100.0,
+            evaluatedAtEpochMillis = 10_000,
+            stationDataUpdatedAtEpochMillis = null,
+        )
+
+        assertEquals(FuelAdviceLevel.STATION_DATA_UNAVAILABLE, advice.level)
+        assertTrue(advice.message.contains("no verified update time"))
+    }
+
+    @Test
+    fun missingHoursTimestampCannotBeSpokenAsOpen() {
+        val advice = FuelCoverageGuardian.evaluate(
+            estimate = estimateFuelRange(profile, 10.0, FuelLevelSource.MANUAL),
+            stationsAhead = listOf(FuelStationAhead("Unverified hours", 20.0, true)),
+            remainingRouteKm = 100.0,
+            evaluatedAtEpochMillis = 10_000,
+            stationDataUpdatedAtEpochMillis = 10_000,
+        )
+
+        assertEquals(FuelAdviceLevel.FUEL_AT_UPCOMING_STATION, advice.level)
+        assertTrue(advice.message.contains("unknown opening status"))
+        assertTrue(!advice.message.contains("which is listed open"))
+    }
+
+    @Test
     fun rejectsInvalidVehicleProfileAndRangeEstimate() {
         assertThrows(IllegalArgumentException::class.java) {
             estimateFuelRange(

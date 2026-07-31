@@ -60,6 +60,53 @@ internal class AppPreferences(context: Context) {
         }
     }
 
+    fun backgroundSyncPolicy(): BackgroundSyncPolicy = BackgroundSyncPolicy(
+        unmeteredOnly = preferences.getBoolean(KEY_SYNC_UNMETERED_ONLY, false),
+        requireBatteryNotLow = preferences.getBoolean(KEY_SYNC_BATTERY_NOT_LOW, true),
+    )
+
+    fun saveBackgroundSyncPolicy(policy: BackgroundSyncPolicy) {
+        check(
+            preferences.edit()
+                .putBoolean(KEY_SYNC_UNMETERED_ONLY, policy.unmeteredOnly)
+                .putBoolean(KEY_SYNC_BATTERY_NOT_LOW, policy.requireBatteryNotLow)
+                .commit(),
+        ) {
+            "Could not persist the background sync policy"
+        }
+    }
+
+    fun shouldResumeMonitoring(): Boolean =
+        preferences.getBoolean(KEY_RESUME_MONITORING, false)
+
+    fun setShouldResumeMonitoring(shouldResume: Boolean) {
+        check(preferences.edit().putBoolean(KEY_RESUME_MONITORING, shouldResume).commit()) {
+            "Could not persist the monitoring recovery state"
+        }
+    }
+
+    fun loadFavoriteDestinations(): List<Destination> =
+        preferences.getStringSet(KEY_FAVORITE_DESTINATIONS, emptySet())
+            .orEmpty()
+            .mapNotNull {
+                normalizeDestination(it, DestinationSource.FAVORITE)
+            }
+            .sortedBy { it.label.lowercase() }
+
+    fun saveFavoriteDestination(destination: Destination) {
+        val favorites = favoriteDestinations(loadFavoriteDestinations() + destination)
+        check(
+            preferences.edit()
+                .putStringSet(
+                    KEY_FAVORITE_DESTINATIONS,
+                    favorites.map(Destination::label).toSet(),
+                )
+                .commit(),
+        ) {
+            "Could not persist the favorite destination"
+        }
+    }
+
     fun clearAll() {
         check(preferences.edit().clear().commit()) {
             "Could not delete local preferences"
@@ -74,5 +121,9 @@ internal class AppPreferences(context: Context) {
         const val KEY_FUEL_TYPE = "fuel_type"
         const val KEY_TANK_CAPACITY = "tank_capacity"
         const val KEY_FUEL_EFFICIENCY = "fuel_efficiency"
+        const val KEY_SYNC_UNMETERED_ONLY = "sync_unmetered_only"
+        const val KEY_SYNC_BATTERY_NOT_LOW = "sync_battery_not_low"
+        const val KEY_RESUME_MONITORING = "resume_monitoring"
+        const val KEY_FAVORITE_DESTINATIONS = "favorite_destinations"
     }
 }

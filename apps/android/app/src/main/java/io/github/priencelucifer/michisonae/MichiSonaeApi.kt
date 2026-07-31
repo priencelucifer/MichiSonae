@@ -54,6 +54,12 @@ internal fun classifyUpload(
     else -> UploadOutcome.REJECTED
 }
 
+internal fun bearerAuthorization(accessToken: String): String {
+    require(accessToken.length in 1..4_096)
+    require(accessToken.isNotBlank() && accessToken.none(Char::isISOControl))
+    return "Bearer $accessToken"
+}
+
 internal fun classifyRevocation(statusCode: Int): RevocationOutcome = when {
     statusCode == 204 -> RevocationOutcome.REVOKED
     statusCode == 408 || statusCode == 429 || statusCode >= 500 -> RevocationOutcome.RETRY
@@ -106,7 +112,7 @@ internal class MichiSonaeApi(baseUrl: String) {
     ): UploadOutcome {
         require(observations.size in 1..100)
         val connection = open("/v1/observations:batch").apply {
-            setRequestProperty("Authorization", "Bearer ${credentials.accessToken}")
+            setRequestProperty("Authorization", bearerAuthorization(credentials.accessToken))
         }
         return try {
             val status = connection.send(
@@ -114,7 +120,9 @@ internal class MichiSonaeApi(baseUrl: String) {
             )
             val response = if (status == 202) {
                 runCatching {
-                    connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+                    connection.inputStream.use {
+                        JSONObject(it.readUtf8AtMost(MAX_API_RESPONSE_BYTES))
+                    }
                 }.getOrNull()
             } else {
                 null
@@ -151,7 +159,7 @@ internal class MichiSonaeApi(baseUrl: String) {
             path = "/v1/installations/current",
             method = "DELETE",
         ).apply {
-            setRequestProperty("Authorization", "Bearer $accessToken")
+            setRequestProperty("Authorization", bearerAuthorization(accessToken))
         }
         return try {
             classifyRevocation(connection.responseCode)
@@ -169,8 +177,8 @@ internal class MichiSonaeApi(baseUrl: String) {
         return try {
             val status = connection.send(body)
             if (status != expectedStatus) throw ApiUnavailable(status)
-            val response = connection.inputStream.bufferedReader().use {
-                JSONObject(it.readText())
+            val response = connection.inputStream.use {
+                JSONObject(it.readUtf8AtMost(MAX_API_RESPONSE_BYTES))
             }
             AnonymousCredentials(
                 installationId = response.getString("installation_id"),
@@ -190,6 +198,7 @@ internal class MichiSonaeApi(baseUrl: String) {
     ): HttpURLConnection =
         (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method
+            instanceFollowRedirects = false
             connectTimeout = 10_000
             readTimeout = 15_000
             doOutput = method == "POST"
@@ -208,3 +217,5 @@ internal class MichiSonaeApi(baseUrl: String) {
 
 internal class ApiUnavailable(val statusCode: Int) :
     Exception("MichiSonae API request failed")
+
+private const val MAX_API_RESPONSE_BYTES = 16 * 1_024

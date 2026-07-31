@@ -11,6 +11,7 @@ Native Kotlin/Jetpack Compose application.
 - atomic offline road-observation queue
 - Android Keystore-encrypted anonymous credentials with registration, refresh and revocation
 - native network-aware background upload with exponential retry
+- persisted upload recovery after phone restart with battery and metered-network policy
 - atomic regional hazard snapshots and offline direction-aware warnings
 - background status, pending upload and snapshot freshness indicators
 - strict read-only Bluetooth ELM327 client, connection state machine and simulator
@@ -22,7 +23,12 @@ Native Kotlin/Jetpack Compose application.
 - external Maps handoff for fuel pumps and selectable service-center searches
 - local Gemma prompt/result boundary with deterministic policy ownership
 - local wake-word command routing boundary with no microphone upload
-- two-step deletion of profile, identity, consent and pending observations
+- restart-safe deletion of profile, identity, consent, pending observations,
+  hazard caches, diagnostic cards and sync state
+- stopped-only structured reporting for every alpha road-hazard category
+- local derived diagnostic cards with expiry and immediate deletion
+- typed, shared and on-device favorite destinations with external Maps handoff
+- stale-data safeguards for fuel readings, station data and opening hours
 
 The app does not store trip history. The local installation identity and vehicle
 profile remain on the phone. Server-issued anonymous access and rotating refresh
@@ -54,18 +60,24 @@ uncertainty buffer and are always labelled as estimates.
 Android location permission is requested once before monitoring starts. A
 low-priority foreground notification keeps detection alive with the screen off.
 The service stores coordinates only for a detected hazard event; it does not
-record ordinary locations or construct trip history. Android may require the
-app to be opened once again after a phone restart before monitoring resumes.
+record ordinary locations or construct trip history. Pending uploads are
+rescheduled after a phone restart. Android does not allow this location
+foreground service to restart silently from the boot receiver, so MichiSonae
+shows a notification, when notification permission is available, asking the
+user to reopen monitoring when it was active before the restart.
 Bluetooth remains optional, so phones without Bluetooth can still install and
-run phone-only road detection. Real adapter pairing and compatibility testing
-require physical hardware; the owner UI therefore stays on the simulator until
-an already-paired adapter is available for end-to-end validation.
+run phone-only road detection. The vehicle screen requests Bluetooth only when
+OBD-II is opened, lists already-paired adapters, and runs the reconnecting
+read-only controller after deliberate selection. The simulator remains
+available without physical hardware; compatibility claims still require
+end-to-end evidence.
 
 Delete-all cancels sync, blocks credential and snapshot recreation, attempts
 anonymous backend revocation when an endpoint is configured, and always removes
 local credentials, queued reports, cached hazards, consent and vehicle data.
-The cache currently keeps one geohash region; adjacent-cell prefetch should be
-added only if boundary testing shows missed warnings.
+The cache keeps the current coarse geohash plus up to eight adjacent regions.
+It migrates the older single-region file, bounds every response and index, and
+refuses unknown future schemas instead of silently downgrading them.
 
 The current service-center cards and local explanation are honest simulations.
 Maps supplies live search, navigation, and opening-hour details without copying
@@ -124,7 +136,9 @@ With no property, the app builds safely with uploads and snapshot refresh
 unconfigured; phone detection, local queueing and simulations still work.
 
 The wrapper verifies the downloaded Gradle distribution with the SHA-256 value
-published for Gradle 9.5.1. GitHub CI also validates the committed wrapper JAR.
+published for Gradle 9.5.1. GitHub CI also validates the committed wrapper JAR,
+rejects dynamic dependency versions, enforces a 25 MiB release APK budget, and
+requires two clean unsigned release builds to be byte-for-byte identical.
 
 ## Owner debug APK
 

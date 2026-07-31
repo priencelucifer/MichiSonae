@@ -3,6 +3,7 @@ package io.github.priencelucifer.michisonae
 import java.time.Duration
 import java.time.Instant
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class CredentialLifecycleTest {
@@ -68,6 +69,16 @@ class CredentialLifecycleTest {
                 now,
             ),
         )
+    }
+
+    @Test
+    fun bearerAuthorizationRejectsBlankOrHeaderControlCharacters() {
+        assertEquals("Bearer safe-token", bearerAuthorization("safe-token"))
+        listOf("", "   ", "token\r\nInjected: value").forEach { value ->
+            assertThrows(IllegalArgumentException::class.java) {
+                bearerAuthorization(value)
+            }
+        }
     }
 
     private fun credentials(

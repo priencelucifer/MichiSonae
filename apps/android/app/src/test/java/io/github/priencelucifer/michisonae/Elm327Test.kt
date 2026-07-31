@@ -95,6 +95,30 @@ class Elm327Test {
     }
 
     @Test
+    fun acceptsCloneLineCountersAndColonHeaders() {
+        assertEquals(
+            1726.0,
+            checkNotNull(
+                Elm327Parser.reading(
+                    Elm327Command.ENGINE_RPM,
+                    "0: 7E8 04 41 0C 1A F8\r>",
+                ),
+            ).value,
+            0.0,
+        )
+        assertEquals(
+            40.0,
+            checkNotNull(
+                Elm327Parser.reading(
+                    Elm327Command.VEHICLE_SPEED,
+                    "7E8: 03 41 0D 28\r>",
+                ),
+            ).value,
+            0.0,
+        )
+    }
+
+    @Test
     fun reportsAdapterFailuresAndRejectsUnboundedInput() {
         assertEquals(
             Elm327ResponseStatus.NO_DATA,
@@ -112,6 +136,12 @@ class Elm327Test {
             Elm327ResponseStatus.INVALID,
             Elm327Parser.response("A".repeat(8_193)).status,
         )
+        listOf("CAN ERROR", "BUFFER FULL", "?", "BUS INIT: ERROR").forEach {
+            assertEquals(
+                Elm327ResponseStatus.ADAPTER_ERROR,
+                Elm327Parser.response("$it\r>").status,
+            )
+        }
     }
 
     @Test
