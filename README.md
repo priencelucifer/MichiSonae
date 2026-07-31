@@ -1,78 +1,96 @@
 # MichiSonae
 
-MichiSonae is an Android-first road-hazard and vehicle-awareness system.
+[![CI](https://github.com/priencelucifer/MichiSonae/actions/workflows/ci.yml/badge.svg)](https://github.com/priencelucifer/MichiSonae/actions/workflows/ci.yml)
+[![Android](https://img.shields.io/badge/Android-Kotlin%20%2B%20Compose-3DDC84?logo=android&logoColor=white)](apps/android)
+[![Backend](https://img.shields.io/badge/backend-FastAPI%20%2B%20PostGIS-009688)](services/api)
+[![Status](https://img.shields.io/badge/status-owner%20alpha-orange)](docs/MASTER_PLAN.md)
 
-The phone works independently: it detects potholes and rough roads, warns the
-driver in the background, and connects to a read-only Bluetooth OBD-II adapter
-for simple vehicle-condition and conservative fuel-range guidance. An optional
-RoadSense sensor may improve road-event confidence. Crash detection and LoRa
-emergency mesh are explicitly deferred future work.
+MichiSonae is an Android-first road-hazard and vehicle-awareness platform. The
+phone can detect road damage without external hardware, warn the driver in the
+background, and optionally read supported values from a strictly read-only
+Bluetooth OBD-II adapter.
 
-## Repository map
+> This project is under active owner-alpha development. It is not a replacement
+> for attentive driving, professional vehicle diagnosis, or emergency services.
 
-| Path | Responsibility | Current state |
-|---|---|---|
-| `apps/android` | Native Kotlin/Jetpack Compose driver application | Architecture scaffold |
-| `services/api` | FastAPI ingestion and hazard projection services | Backend v1 complete |
-| `firmware/roadsense` | ESP32 RoadSense accessory firmware | Safe no-network scaffold |
-| `hardware` | Electrical, mechanical, BOM, manufacturing and validation records | Documentation scaffold |
-| `contracts` | Versioned API, event and device protocol contracts | Initial observation and frame schemas |
-| `infra` | Local, staging and production infrastructure definitions | Deployable backend v1 contract |
-| `simulator` | Synthetic road/OBD/device test data | Boundary scaffold |
-| `docs` | Architecture, decisions, roadmap and master plan | Active |
+## Core capabilities
 
-## Product boundaries
+- Phone-only pothole and rough-road detection.
+- Background English voice, sound and vibration warnings.
+- Account-free, offline-first road observations and cached hazard warnings.
+- Optional read-only ELM327 OBD-II values and deterministic fault explanations.
+- Conservative fuel-range guidance and upcoming fuel-station warnings.
+- A production-oriented FastAPI/PostgreSQL/PostGIS backend with idempotent
+  ingestion, hazard projection, public regional snapshots and operational
+  runbooks.
 
-- Android only; Kotlin/Jetpack Compose.
-- Account-free core experience.
-- Phone-only road detection is mandatory.
-- OBD-II is read-only and capability-driven.
-- Deterministic policy owns warnings, severity, fuel reachability and safety
-  actions. Local AI may explain verified facts but cannot change them.
-- No trip history.
-- No cloud upload of raw microphone, IMU tuning traces, OBD traces, diagnostic
-  prompts or model responses.
-- LoRa mesh and crash/SOS are future work, not launch dependencies.
+Crash/SOS automation and LoRa mesh communication are documented future phases;
+they are not present in the current product.
 
-## Server foundation
+## Monorepo layout
 
-The backend foundation exposes:
+Each deployable component has one home and its own README. Shared data crosses
+component boundaries only through `contracts`.
 
-- `GET /health/live`
-- `GET /health/ready`
-- `POST /v1/observations:batch` with atomic PostgreSQL/PostGIS storage,
-  `event_id` idempotency and a transactional outbox
-- a leased, retry-safe projection worker with distinct-installation consensus,
-  dead letters and deterministic rebuilds
-- content-addressed global regional snapshots and an ETag-enabled public read
-  endpoint designed for CDN fan-out
-- account-free anonymous installation credentials, replay-safe refresh
-  rotation, authenticated contribution, trusted-proxy handling, and atomic
-  abuse limits
-- guarded raw-observation retention, audited dead-letter operations,
-  deterministic full/regional rebuilds, consistency checks, and a real
-  isolated-database restore drill
-- correlated redacted JSON logs, bounded Prometheus metrics, independent
-  API/worker health states, graceful worker shutdown, staging probes, alerts,
-  and incident runbooks
-- one immutable non-root/read-only image with isolated migration, API,
-  projection and snapshot roles, file-backed secrets and least-privilege
-  database grants
-- reproducible local Compose, provider-neutral staging/production templates,
-  controlled canary/rollback, backup/PITR requirements and budget/scale inputs
-- dependency, secret, IaC and critical-container scans, an SPDX SBOM, and a k6
-  alpha/commute-spike/duplicate-retry performance gate
+| Path | Owns |
+|---|---|
+| [`apps/android`](apps/android) | Native Kotlin/Jetpack Compose application |
+| [`services/api`](services/api) | FastAPI ingestion, projection and snapshot services |
+| [`contracts`](contracts) | Versioned API, event and device protocol contracts |
+| [`infra`](infra) | Local stack, deployment contracts, observability and load tests |
+| [`simulator`](simulator) | Deterministic test observations and device fixtures |
+| [`firmware/roadsense`](firmware/roadsense) | Deferred optional ESP32 accessory scaffold |
+| [`hardware`](hardware) | Deferred CAD, BOM and validation records |
+| [`docs`](docs) | Architecture decisions, operations, roadmap and master plan |
 
-The endpoint returns `202` only after the database transaction commits.
+This is intentionally a monorepo: Android, backend, contracts and future
+hardware stay separated by directory while one CI pipeline checks integration.
 
-## Development
+## Safety and privacy boundaries
 
-See each component README for its toolchain. The immediate order is:
+- Android remains native Kotlin/Jetpack Compose.
+- Phone-only detection works without OBD-II or RoadSense hardware.
+- OBD-II is read-only: no clearing, coding, actuation or ECU writes.
+- Deterministic policy owns warning severity, safe actions and fuel reachability.
+- No accounts or trip history.
+- Raw microphone audio, raw OBD streams, local AI conversations and sensor
+  tuning traces are not uploaded.
+- A road observation is never acknowledged before durable storage succeeds.
 
-1. contracts and repository rules;
-2. phone-only Android drive-session vertical slice;
-3. read-only ELM327 adapter fingerprinting;
-4. durable observation ingestion with PostgreSQL/outbox;
-5. optional RoadSense BLE sensor.
+See [AGENTS.md](AGENTS.md) for repository-enforced engineering constraints.
 
-The detailed implementation baseline is in [docs/MASTER_PLAN.md](docs/MASTER_PLAN.md).
+## Quick start
+
+### Backend
+
+```bash
+cd services/api
+python -m venv .venv
+python -m pip install -e ".[dev]"
+pytest
+```
+
+Local PostgreSQL/PostGIS and full integration instructions are in the
+[backend README](services/api/README.md).
+
+### Android
+
+```bash
+cd apps/android
+./gradlew testDebugUnitTest lintDebug assembleDebug
+```
+
+On Windows, use `gradlew.bat`. See the [Android README](apps/android/README.md)
+for the required JDK/SDK versions and owner APK workflow.
+
+## Documentation
+
+- [Production master plan](docs/MASTER_PLAN.md)
+- [Architecture overview](docs/architecture/README.md)
+- [Architecture decision records](docs/README.md)
+- [Deployment and operations](docs/operations)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+
+Changes are developed through focused pull requests; merged branches are
+deleted automatically.
