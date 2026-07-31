@@ -2,6 +2,7 @@ package io.github.priencelucifer.michisonae
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HazardSnapshotsTest {
@@ -22,6 +23,23 @@ class HazardSnapshotsTest {
                 confidence = 0.5,
                 contributorCount = 2,
             )
+        }
+    }
+
+    @Test
+    fun everyContractHazardKindHasADeterministicWarningLabel() {
+        val kinds = mapOf(
+            "road_damage" to "Road damage",
+            "rough_road" to "Rough road",
+            "obstruction" to "Road obstruction",
+            "flooding" to "Flooding",
+            "manhole_hazard" to "Manhole hazard",
+            "road_construction" to "Road construction",
+            "disabled_vehicle" to "Disabled vehicle",
+        )
+
+        kinds.forEach { (wireName, label) ->
+            assertEquals(label, PublicHazardKind.fromWireName(wireName).warningLabel)
         }
     }
 
@@ -83,5 +101,61 @@ class HazardSnapshotsTest {
 
         assertEquals(null, result)
         assertEquals(false, stored)
+    }
+
+    @Test
+    fun adjacentRegionsIncludeCurrentCellAndStayBounded() {
+        val regions = adjacentRegionalHazardIds("gh5:wh9hx")
+
+        assertEquals("gh5:wh9hx", regions.first())
+        assertEquals(regions.distinct(), regions)
+        assertTrue(regions.size in 6..9)
+    }
+
+    @Test
+    fun adjacentRegionsWrapAtTheInternationalDateLine() {
+        val region = regionalHazardId(0.0, 179.999, precision = 5)
+
+        adjacentRegionalHazardIds(region).forEach {
+            assertTrue(it.matches(Regex("gh5:[0123456789bcdefghjkmnpqrstuvwxyz]{5}")))
+        }
+    }
+
+    @Test
+    fun cacheIndexEvictsOldPrefetchBeforeTheCurrentRegion() {
+        val current = "gh5:bbbbb"
+        var index = HazardCacheIndex(current, listOf(current))
+        listOf("gh5:ccccc", "gh5:ddddd", "gh5:eeeee").forEach {
+            index = hazardCacheIndexAfterWrite(
+                existing = index,
+                regionId = it,
+                makeCurrent = false,
+                maxRegions = 3,
+            )
+        }
+
+        assertEquals(current, index.currentRegionId)
+        assertEquals(listOf(current, "gh5:ddddd", "gh5:eeeee"), index.regions)
+    }
+
+    @Test
+    fun legacySnapshotMigrationMakesItsRegionCurrent() {
+        val snapshot = SimulatedRegionalHazards.guwahati(1_000)
+
+        assertEquals(
+            HazardCacheIndex(snapshot.regionId, listOf(snapshot.regionId)),
+            hazardCacheIndexForLegacySnapshot(snapshot),
+        )
+    }
+
+    @Test
+    fun futureCacheIndexIsNotSilentlyDowngraded() {
+        assertThrows(UnsupportedHazardCacheSchema::class.java) {
+            validateHazardCacheIndexSchema(2)
+        }
+        assertEquals(
+            false,
+            shouldMigrateLegacyHazardCache(indexExists = true, legacyExists = true),
+        )
     }
 }

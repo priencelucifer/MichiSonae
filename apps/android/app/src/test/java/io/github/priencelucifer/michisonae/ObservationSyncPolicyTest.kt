@@ -30,4 +30,10 @@ class ObservationSyncPolicyTest {
         assertEquals(LatestSyncStatus.RETRYING, latestSyncStatus(UploadOutcome.RETRY))
         assertEquals(LatestSyncStatus.REJECTED, latestSyncStatus(UploadOutcome.REJECTED))
     }
+
+    @Test
+    fun deletionGateBlocksNewSyncScheduling() {
+        assertFalse(syncScheduleAllowed(deletionInProgress = true))
+        assertTrue(syncScheduleAllowed(deletionInProgress = false))
+    }
 }

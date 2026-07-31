@@ -89,7 +89,12 @@ internal data class RoadObservationDraft(
 
 internal enum class ObservationKind(val contractName: String) {
     ROAD_DAMAGE("road_damage"),
-    ROUGH_ROAD("rough_road");
+    ROUGH_ROAD("rough_road"),
+    OBSTRUCTION("obstruction"),
+    FLOODING("flooding"),
+    MANHOLE_HAZARD("manhole_hazard"),
+    ROAD_CONSTRUCTION("road_construction"),
+    DISABLED_VEHICLE("disabled_vehicle");
 
     companion object {
         fun fromContractName(value: String): ObservationKind =

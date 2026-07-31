@@ -399,7 +399,14 @@ components:
           type: string
           pattern: "^[0-9a-f]{24}$"
         kind:
-          enum: [road_damage, rough_road]
+          enum:
+            - road_damage
+            - rough_road
+            - obstruction
+            - flooding
+            - manhole_hazard
+            - road_construction
+            - disabled_vehicle
         latitude:
           type: number
           minimum: -90

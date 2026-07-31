@@ -18,6 +18,22 @@ internal fun shouldRetrySync(
     UploadOutcome.REJECTED, null -> false
 }
 
+internal data class BackgroundSyncPolicy(
+    val unmeteredOnly: Boolean = false,
+    val requireBatteryNotLow: Boolean = true,
+)
+
+internal fun requiredNetworkType(policy: BackgroundSyncPolicy): Int =
+    if (policy.unmeteredOnly) JobInfo.NETWORK_TYPE_UNMETERED else JobInfo.NETWORK_TYPE_ANY
+
+internal fun backgroundDownloadAllowed(
+    policy: BackgroundSyncPolicy,
+    networkMetered: Boolean,
+    batteryLow: Boolean,
+): Boolean =
+    (!policy.unmeteredOnly || !networkMetered) &&
+        (!policy.requireBatteryNotLow || !batteryLow)
+
 internal enum class LatestSyncStatus {
     NEVER,
     SUCCEEDED,
@@ -32,8 +48,12 @@ internal fun latestSyncStatus(outcome: UploadOutcome?): LatestSyncStatus = when 
     UploadOutcome.REJECTED -> LatestSyncStatus.REJECTED
 }
 
+internal fun syncScheduleAllowed(deletionInProgress: Boolean): Boolean =
+    !deletionInProgress
+
 internal class ObservationSyncStatus(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(
+    private val appContext = context.applicationContext
+    private val preferences = appContext.getSharedPreferences(
         PREFERENCES,
         Context.MODE_PRIVATE,
     )
@@ -48,10 +68,14 @@ internal class ObservationSyncStatus(context: Context) {
         check(preferences.edit().putString(STATUS, status.name).commit()) {
             "Latest sync status could not be stored"
         }
+        StatusChangeNotifier.notify(appContext)
     }
 
     fun clear() {
-        preferences.edit().remove(STATUS).apply()
+        check(preferences.edit().remove(STATUS).commit()) {
+            "Latest sync status could not be cleared"
+        }
+        StatusChangeNotifier.notify(appContext)
     }
 
     private companion object {
@@ -64,8 +88,14 @@ internal object ObservationSyncScheduler {
     private const val JOB_ID = 0x4D53
     private const val ENDPOINT_PREFERENCES = "michisonae-backend-endpoint"
     private const val ENDPOINT = "base-url"
+    private val lifecycleLock = Any()
 
-    fun schedule(context: Context, baseUrl: String): Boolean {
+    fun schedule(context: Context, baseUrl: String): Boolean = synchronized(lifecycleLock) {
+        if (
+            !syncScheduleAllowed(DataLifecycleGate.isDeletionInProgress(context))
+        ) {
+            return@synchronized false
+        }
         val safeBaseUrl = validatedApiBaseUrl(baseUrl)
         val appContext = context.applicationContext
         check(
@@ -76,33 +106,44 @@ internal object ObservationSyncScheduler {
         ) {
             "Backend endpoint could not be stored"
         }
+        val policy = AppPreferences(appContext).backgroundSyncPolicy()
         val job = JobInfo.Builder(
             JOB_ID,
             ComponentName(appContext, ObservationUploadJobService::class.java),
         )
-            .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+            .setRequiredNetworkType(requiredNetworkType(policy))
+            .setRequiresBatteryNotLow(policy.requireBatteryNotLow)
+            .setPersisted(true)
             .setBackoffCriteria(
                 30_000L,
                 JobInfo.BACKOFF_POLICY_EXPONENTIAL,
             )
             .build()
-        return appContext.getSystemService(JobScheduler::class.java).schedule(job) ==
+        appContext.getSystemService(JobScheduler::class.java).schedule(job) ==
             JobScheduler.RESULT_SUCCESS
     }
 
-    fun cancel(context: Context) {
+    fun cancel(context: Context) = synchronized(lifecycleLock) {
         context.getSystemService(JobScheduler::class.java).cancel(JOB_ID)
-        context.getSharedPreferences(ENDPOINT_PREFERENCES, Context.MODE_PRIVATE)
-            .edit()
-            .remove(ENDPOINT)
-            .apply()
+        check(
+            context.getSharedPreferences(ENDPOINT_PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .remove(ENDPOINT)
+                .commit(),
+        ) {
+            "Backend endpoint could not be deleted"
+        }
         ObservationSyncStatus(context).clear()
     }
 
     fun configuredBaseUrl(context: Context): String? =
-        context.getSharedPreferences(ENDPOINT_PREFERENCES, Context.MODE_PRIVATE)
-            .getString(ENDPOINT, null)
-            ?.let { runCatching { validatedApiBaseUrl(it) }.getOrNull() }
+        if (DataLifecycleGate.isDeletionInProgress(context)) {
+            null
+        } else {
+            context.getSharedPreferences(ENDPOINT_PREFERENCES, Context.MODE_PRIVATE)
+                .getString(ENDPOINT, null)
+                ?.let { runCatching { validatedApiBaseUrl(it) }.getOrNull() }
+        }
 }
 
 internal class ObservationUploadJobService : JobService() {

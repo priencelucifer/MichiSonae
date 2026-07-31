@@ -296,7 +296,7 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/android
@@ -310,8 +310,18 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v6
-      - name: Verify wrapper and build debug APK
-        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug --stacktrace
+      - name: Verify wrapper and dependency pins
+        shell: pwsh
+        run: ./verify-release-inputs.ps1
+      - name: Test, lint and build debug APK
+        run: ./gradlew --no-daemon --write-verification-metadata sha256 testDebugUnitTest lintDebug assembleDebug --stacktrace
+      - name: Upload Gradle dependency verification candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-gradle-verification-${{ github.sha }}
+          path: apps/android/gradle/verification-metadata.xml
+          if-no-files-found: error
+          retention-days: 2
       - name: Upload owner debug APK
         uses: actions/upload-artifact@v7
         with:
@@ -319,6 +329,14 @@ jobs:
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Verify reproducible release APK and size budget
+        run: |
+          ./gradlew --no-daemon clean assembleRelease --stacktrace
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/first-release.apk"
+          ./gradlew --no-daemon clean assembleRelease --stacktrace
+          cmp "$RUNNER_TEMP/first-release.apk" app/build/outputs/apk/release/app-release-unsigned.apk
+          test "$(stat -c %s app/build/outputs/apk/release/app-release-unsigned.apk)" -le 26214400
+          sha256sum app/build/outputs/apk/release/app-release-unsigned.apk
 
   firmware:
     runs-on: ubuntu-latest

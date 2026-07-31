@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
 from fakes import MemoryObservationStore, MemorySecurityService
 from fastapi.testclient import TestClient
 
@@ -8,7 +9,11 @@ from michisonae_api.main import create_app
 from michisonae_api.settings import Settings
 
 
-def valid_batch(*, event_id: str | None = None) -> dict[str, object]:
+def valid_batch(
+    *,
+    event_id: str | None = None,
+    kind: str = "rough_road",
+) -> dict[str, object]:
     return {
         "schema_version": "1.0",
         "observations": [
@@ -20,7 +25,7 @@ def valid_batch(*, event_id: str | None = None) -> dict[str, object]:
                 "longitude": 91.7362,
                 "location_accuracy_m": 8.0,
                 "speed_mps": 12.0,
-                "kind": "rough_road",
+                "kind": kind,
                 "severity": 0.7,
                 "confidence": 0.8,
                 "source": "phone",
@@ -157,6 +162,36 @@ def test_duplicate_event_ids_inside_one_batch_are_rejected() -> None:
     )
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "obstruction",
+        "flooding",
+        "manhole_hazard",
+        "road_construction",
+        "disabled_vehicle",
+    ),
+)
+def test_manual_hazard_kinds_use_the_same_durable_acceptance(kind: str) -> None:
+    store = MemoryObservationStore()
+    security = MemorySecurityService()
+    with TestClient(
+        create_app(
+            Settings(environment="test"),
+            observation_store=store,
+            security_service=security,
+        ),
+    ) as client:
+        response = client.post(
+            "/v1/observations:batch",
+            json=valid_batch(kind=kind),
+            headers={"Authorization": f"Bearer {security.access_token}"},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["stored_count"] == 1
 
 
 def test_invalid_location_is_rejected_before_ingestion_guard() -> None:

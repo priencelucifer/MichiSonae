@@ -165,7 +165,7 @@ internal class EncryptedCredentialStore(context: Context) {
 
     private fun validate(credentials: AnonymousCredentials) {
         require(credentials.installationId.length in 16..128)
-        require(credentials.accessToken.isNotBlank())
+        bearerAuthorization(credentials.accessToken)
         require(credentials.refreshToken.length in 40..256)
         Instant.parse(credentials.accessExpiresAt)
         Instant.parse(credentials.refreshExpiresAt)

@@ -7,6 +7,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.Sensor
@@ -16,6 +17,8 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.ConnectivityManager
+import android.os.BatteryManager
 import android.os.IBinder
 import android.os.SystemClock
 import java.util.concurrent.Executors
@@ -37,6 +40,7 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
     private var cachedHazards: RegionalHazardSnapshot? = null
     private var drivingState = DrivingState.IDLE
     private var lastLocation: Location? = null
+    private var lastLocationAtMillis = Long.MIN_VALUE
     private var lastWarningAt = Long.MIN_VALUE
 
     override fun onCreate() {
@@ -47,13 +51,45 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
             notification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
         )
+        val monitoringStatus = MonitoringStatusStore(this)
 
-        val profile = AppPreferences(this).loadVehicleProfile()
-        if (profile == null || !hasLocationPermission()) {
+        val preferences = AppPreferences(this)
+        val profile = preferences.loadVehicleProfile()
+        val locationPermission = hasLocationPermission()
+        val privacyAccepted = preferences.hasAcceptedPrivacy()
+        val deletionInProgress = DataLifecycleGate.isDeletionInProgress(this)
+        if (privacyAccepted && !deletionInProgress) {
+            runCatching {
+                monitoringStatus.record(
+                    MonitoringState.STARTING,
+                    "Starting phone road detection.",
+                )
+            }
+        }
+        if (
+            !monitoringStartAllowed(
+                deletionInProgress = deletionInProgress,
+                privacyAccepted = privacyAccepted,
+                hasVehicleProfile = profile != null,
+                hasLocationPermission = locationPermission,
+            )
+        ) {
+            if (privacyAccepted && !deletionInProgress) {
+                runCatching {
+                    monitoringStatus.record(
+                        MonitoringState.DEGRADED,
+                        if (profile == null) {
+                            "A vehicle profile is required before monitoring can start."
+                        } else {
+                            "Location permission is missing; monitoring could not start."
+                        },
+                    )
+                }
+            }
             stopSelf()
             return
         }
-        vehicleClass = profile.vehicleClass
+        vehicleClass = checkNotNull(profile).vehicleClass
         warningPlayer = DriverWarningPlayer(this)
         OfflineObservationQueue.resumeAcceptingObservations()
         HazardSnapshotCache.resumeAcceptingSnapshots()
@@ -62,14 +98,40 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)?.let { baseUrl ->
             nearbyHazards = NearbyHazardSnapshots(this, baseUrl)
             storageExecutor.execute {
-                if (observationQueue.pendingCount() > 0) {
+                val pendingCount = runCatching { observationQueue.pendingCount() }
+                    .onFailure {
+                        runCatching {
+                            MonitoringStatusStore(this).record(
+                                MonitoringState.DEGRADED,
+                                "Queued reports need local storage recovery.",
+                            )
+                        }
+                    }
+                    .getOrNull()
+                if (pendingCount != null && pendingCount > 0) {
                     runCatching { ObservationSyncScheduler.schedule(this, baseUrl) }
                 }
             }
         }
         sensorManager = getSystemService(SensorManager::class.java)
         locationManager = getSystemService(LocationManager::class.java)
-        startMonitoring()
+        val capabilities = startMonitoring()
+        runCatching {
+            monitoringStatus.record(
+                if (capabilities.sensorActive && capabilities.locationActive) {
+                    MonitoringState.ACTIVE
+                } else {
+                    MonitoringState.DEGRADED
+                },
+                when {
+                    !capabilities.sensorActive ->
+                        "The linear acceleration sensor is unavailable; road detection is paused."
+                    !capabilities.locationActive ->
+                        "No location provider is active; road detection is waiting for location."
+                    else -> "Phone road detection is active."
+                },
+            )
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
@@ -79,10 +141,12 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
 
     override fun onLocationChanged(location: Location) {
         lastLocation = location
+        lastLocationAtMillis = SystemClock.elapsedRealtime()
         drivingState = drivingDetector.update(
             MotionSample(
-                timestampMillis = SystemClock.elapsedRealtime(),
+                timestampMillis = lastLocationAtMillis,
                 speedKph = location.speed.coerceAtLeast(0f) * 3.6,
+                speedAccuracyKph = location.speedAccuracyKph(),
             ),
         )
         if (drivingState == DrivingState.DRIVING) {
@@ -103,6 +167,17 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
                     event.values[1],
                     event.values[2],
                 ),
+                timestampMillis = event.timestamp / NANOS_PER_MILLISECOND,
+                speedAccuracyKph = location.speedAccuracyKph(),
+                locationAccuracyMetres = location.accuracy
+                    .toDouble()
+                    .takeIf { location.hasAccuracy() }
+                    ?: Double.POSITIVE_INFINITY,
+                locationAgeMillis = if (lastLocationAtMillis == Long.MIN_VALUE) {
+                    Long.MAX_VALUE
+                } else {
+                    (now - lastLocationAtMillis).coerceAtLeast(0)
+                },
             ),
             vehicleClass,
             drivingState,
@@ -115,12 +190,26 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         }
         lastWarningAt = now
 
-        warningPlayer.warn(hazard.userMessage)
         val observation = hazard.toObservation(location)
         storageExecutor.execute {
-            observationQueue.enqueue(observation)
-            BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)?.let { baseUrl ->
-                runCatching { ObservationSyncScheduler.schedule(this, baseUrl) }
+            val stored = runCatching { observationQueue.enqueue(observation) }
+                .getOrDefault(false)
+            if (stored) {
+                mainExecutor.execute { warningPlayer.warn(hazard.userMessage) }
+                BuildConfig.MICHI_API_BASE_URL.takeIf(String::isNotBlank)?.let { baseUrl ->
+                    runCatching { ObservationSyncScheduler.schedule(this, baseUrl) }
+                }
+                StatusChangeNotifier.notify(this)
+            } else {
+                mainExecutor.execute {
+                    if (lastWarningAt == now) lastWarningAt = Long.MIN_VALUE
+                }
+                runCatching {
+                    MonitoringStatusStore(this).record(
+                        MonitoringState.DEGRADED,
+                        "A road report could not be saved; no detection acknowledgement was played.",
+                    )
+                }
             }
         }
     }
@@ -131,26 +220,43 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         if (::sensorManager.isInitialized) sensorManager.unregisterListener(this)
         if (::locationManager.isInitialized) locationManager.removeUpdates(this)
         if (::warningPlayer.isInitialized) warningPlayer.close()
-        storageExecutor.shutdown()
+        storageExecutor.shutdownNow()
         networkExecutor.shutdownNow()
+        if (
+            !DataLifecycleGate.isDeletionInProgress(this) &&
+            AppPreferences(this).hasAcceptedPrivacy()
+        ) {
+            runCatching {
+                MonitoringStatusStore(this).record(
+                    MonitoringState.STOPPED,
+                    "Phone road detection is not currently running.",
+                )
+            }
+        }
         super.onDestroy()
     }
 
     @SuppressLint("MissingPermission")
-    private fun startMonitoring() {
-        sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sensor ->
+    private fun startMonitoring(): MonitoringCapabilities {
+        val sensorActive = sensorManager.getDefaultSensor(
+            Sensor.TYPE_LINEAR_ACCELERATION,
+        )?.let { sensor ->
             sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
-        }
+        } ?: false
+        var locationActive = false
         listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
             if (runCatching { locationManager.isProviderEnabled(provider) }.getOrDefault(false)) {
-                locationManager.requestLocationUpdates(
-                    provider,
-                    LOCATION_INTERVAL_MILLIS,
-                    0f,
-                    this,
-                )
+                locationActive = runCatching {
+                    locationManager.requestLocationUpdates(
+                        provider,
+                        LOCATION_INTERVAL_MILLIS,
+                        0f,
+                        this,
+                    )
+                }.isSuccess || locationActive
             }
         }
+        return MonitoringCapabilities(sensorActive, locationActive)
     }
 
     private fun RoadHazard.toObservation(location: Location): RoadObservationDraft =
@@ -172,6 +278,14 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
 
     private fun refreshNearbyHazards(location: Location) {
         val snapshots = nearbyHazards ?: return
+        val syncPolicy = AppPreferences(this).backgroundSyncPolicy()
+        val networkMetered = getSystemService(ConnectivityManager::class.java)
+            .isActiveNetworkMetered
+        val batteryLow = registerReceiver(
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+        )?.getBooleanExtra(BatteryManager.EXTRA_BATTERY_LOW, false) ?: false
+        if (!backgroundDownloadAllowed(syncPolicy, networkMetered, batteryLow)) return
         val region = regionalHazardId(location.latitude, location.longitude)
         val now = SystemClock.elapsedRealtime()
         if (!snapshotRefreshGate.shouldRefresh(region, now)) return
@@ -186,6 +300,7 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
                 refreshed?.regionId == region
             ) {
                 cachedHazards = refreshed
+                StatusChangeNotifier.notify(this)
             }
         }
     }
@@ -217,6 +332,13 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    private fun Location.speedAccuracyKph(): Double =
+        if (hasSpeedAccuracy()) {
+            speedAccuracyMetersPerSecond.toDouble().coerceAtLeast(0.0) * 3.6
+        } else {
+            0.0
+        }
+
     private fun createNotificationChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
@@ -241,5 +363,11 @@ class DrivingMonitorService : Service(), SensorEventListener, LocationListener {
         const val NOTIFICATION_ID = 1001
         const val LOCATION_INTERVAL_MILLIS = 1_000L
         const val WARNING_COOLDOWN_MILLIS = 8_000L
+        const val NANOS_PER_MILLISECOND = 1_000_000L
     }
+
+    private data class MonitoringCapabilities(
+        val sensorActive: Boolean,
+        val locationActive: Boolean,
+    )
 }
