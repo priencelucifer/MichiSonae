@@ -18,6 +18,14 @@ ID for different content returns `409` and rolls back the entire batch.
 Database, pool, schema, or outbox failures return `503`; they are never
 acknowledged as accepted.
 
+The backend and Android client consume the same committed golden ingestion
+vectors. Integration tests also prove duplicate-only retries, mixed
+new/duplicate batches, conflicting ID reuse and transaction rollback after a
+partial failure. This keeps retry behavior compatible without coupling either
+component to the other's implementation. The committed/generated OpenAPI test
+also compares ingestion schema literals, types and collection/numeric bounds,
+not only field names.
+
 Stopped-user manual hazards use the same transaction and retry contract as
 automatic phone observations. Migration `0007` adds obstruction, flooding,
 manhole, construction and disabled-vehicle kinds without rewriting any

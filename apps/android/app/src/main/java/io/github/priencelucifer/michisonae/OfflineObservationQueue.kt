@@ -12,8 +12,9 @@ internal class OfflineObservationQueue(context: Context) {
     fun enqueue(observation: RoadObservationDraft): Boolean = lock.withLock {
         if (!acceptingObservations) return@withLock false
         val pending = read()
-        if (pending.size >= MAX_PENDING_OBSERVATIONS) return@withLock false
-        write(pending + observation)
+        val updated = appendUniqueObservation(pending, observation) ?: return@withLock false
+        if (updated === pending) return@withLock true
+        write(updated)
         true
     }
 
@@ -36,10 +37,17 @@ internal class OfflineObservationQueue(context: Context) {
         val acknowledged = acknowledgedEventIds(outcome, eventIds)
         if (acknowledged.isNotEmpty()) {
             write(
-                read().filterNot { it.eventId in acknowledged },
+                removeFirstMatchingObservations(read(), acknowledged),
                 allowOversizedDrain = true,
             )
         }
+    }
+
+    fun discardPermanentlyRejected(eventId: String) = lock.withLock {
+        write(
+            removeFirstMatchingObservations(read(), setOf(eventId)),
+            allowOversizedDrain = true,
+        )
     }
 
     private fun read(): List<RoadObservationDraft> {
@@ -97,6 +105,28 @@ internal data class DecodedObservationQueue(
     val observations: List<RoadObservationDraft>,
     val needsRewrite: Boolean,
 )
+
+internal fun appendUniqueObservation(
+    observations: List<RoadObservationDraft>,
+    observation: RoadObservationDraft,
+): List<RoadObservationDraft>? {
+    val existing = observations.firstOrNull { it.eventId == observation.eventId }
+    return when {
+        existing == observation -> observations
+        existing != null || observations.size >= MAX_PENDING_OBSERVATIONS -> null
+        else -> observations + observation
+    }
+}
+
+internal fun removeFirstMatchingObservations(
+    observations: List<RoadObservationDraft>,
+    eventIds: Set<String>,
+): List<RoadObservationDraft> {
+    val remaining = eventIds.toMutableSet()
+    return observations.filter { observation ->
+        observation.eventId !in remaining || !remaining.remove(observation.eventId)
+    }
+}
 
 internal fun encodeObservationQueue(observations: List<RoadObservationDraft>): String =
     buildString {

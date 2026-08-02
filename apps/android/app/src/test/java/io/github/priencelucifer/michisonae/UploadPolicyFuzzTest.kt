@@ -13,14 +13,14 @@ class UploadPolicyFuzzTest {
             val received = random.nextInt(-3, 104)
             val stored = random.nextInt(-3, 104)
             val duplicate = random.nextInt(-3, 104)
-            val outcome = classifyUpload(202, submitted, received, stored, duplicate)
+            val outcome = classifyUpload(202, submitted, "1.0", received, stored, duplicate)
             val valid = submitted in 1..100 &&
                 received == submitted &&
                 received in 0..submitted &&
                 stored in 0..submitted &&
                 duplicate in 0..submitted &&
                 stored + duplicate == received
-            assertEquals(if (valid) UploadOutcome.ACCEPTED else UploadOutcome.REJECTED, outcome)
+            assertEquals(if (valid) UploadOutcome.ACCEPTED else UploadOutcome.RETRY, outcome)
             assertEquals(
                 if (valid) setOf("queued") else emptySet(),
                 acknowledgedEventIds(outcome, setOf("queued")),

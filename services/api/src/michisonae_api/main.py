@@ -362,6 +362,7 @@ def create_app(
             duplicate_count=result.duplicate_count,
         )
         return ObservationBatchAccepted(
+            schema_version="1.0",
             received_count=result.received_count,
             stored_count=result.stored_count,
             duplicate_count=result.duplicate_count,

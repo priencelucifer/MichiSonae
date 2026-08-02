@@ -29,6 +29,12 @@ Native Kotlin/Jetpack Compose application.
 - local derived diagnostic cards with expiry and immediate deletion
 - typed, shared and on-device favorite destinations with external Maps handoff
 - stale-data safeguards for fuel readings, station data and opening hours
+- shared Android/backend golden ingestion vectors and strict acknowledgement
+  validation
+- duplicate-ID prevention and one-record isolation for permanent `409`/`422`
+  rejections so a bad record cannot starve later observations
+- deterministic sensor, OBD, queue, cache, network-failure, corruption and
+  fuzz simulations
 
 The app does not store trip history. The local installation identity and vehicle
 profile remain on the phone. Server-issued anonymous access and rotating refresh
@@ -113,7 +119,7 @@ Requirements:
 - Android SDK platform 36
 - Android SDK build tools 36.0.0
 
-The repository owns a Gradle 9.5.1 wrapper. Do not use a separately installed
+The repository owns a Gradle 9.6.1 wrapper. Do not use a separately installed
 Gradle version. From this directory, run:
 
 ```shell
@@ -136,7 +142,7 @@ With no property, the app builds safely with uploads and snapshot refresh
 unconfigured; phone detection, local queueing and simulations still work.
 
 The wrapper verifies the downloaded Gradle distribution with the SHA-256 value
-published for Gradle 9.5.1. GitHub CI also validates the committed wrapper JAR,
+published for Gradle 9.6.1. GitHub CI also validates the committed wrapper JAR,
 rejects dynamic dependency versions, enforces a 25 MiB release APK budget, and
 requires two clean unsigned release builds to be byte-for-byte identical.
 

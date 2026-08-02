@@ -32,16 +32,16 @@ they are not present in the current product.
 Each deployable component has one home and its own README. Shared data crosses
 component boundaries only through `contracts`.
 
-| Path | Owns |
-|---|---|
-| [`apps/android`](apps/android) | Native Kotlin/Jetpack Compose application |
-| [`services/api`](services/api) | FastAPI ingestion, projection and snapshot services |
-| [`contracts`](contracts) | Versioned API, event and device protocol contracts |
-| [`infra`](infra) | Local stack, deployment contracts, observability and load tests |
-| [`simulator`](simulator) | Deterministic test observations and device fixtures |
-| [`firmware/roadsense`](firmware/roadsense) | Deferred optional ESP32 accessory scaffold |
-| [`hardware`](hardware) | Deferred CAD, BOM and validation records |
-| [`docs`](docs) | Architecture decisions, operations, roadmap and master plan |
+| Path | Owns | Current status |
+|---|---|---|
+| [`apps/android`](apps/android) | Native Kotlin/Jetpack Compose application | Owner-alpha software complete; device, road and real-car validation pending |
+| [`services/api`](services/api) | FastAPI ingestion, projection and snapshot services | Backend v1 implemented and CI-gated; live alpha deployment pending |
+| [`contracts`](contracts) | Versioned API, event and device protocol contracts | v1 schemas and shared ingestion vectors enforced in CI |
+| [`infra`](infra) | Local stack, deployment contracts, observability and load tests | Reproducible CI/release checks implemented; cloud rollout pending |
+| [`simulator`](simulator) | Deterministic test observations and device fixtures | Sensor, OBD, queue, corruption, network, fuzz and security cases implemented |
+| [`firmware/roadsense`](firmware/roadsense) | Deferred optional ESP32 accessory scaffold | Future phase; no v1 LoRa or crash/SOS runtime |
+| [`hardware`](hardware) | Deferred CAD, BOM and validation records | Future phase; physical validation not started |
+| [`docs`](docs) | Architecture decisions, operations, roadmap and master plan | Owner-alpha plan and release gates current as of 2 August 2026 |
 
 This is intentionally a monorepo: Android, backend, contracts and future
 hardware stay separated by directory while one CI pipeline checks integration.

@@ -1,5 +1,7 @@
 package io.github.priencelucifer.michisonae
 
+import java.io.ByteArrayInputStream
+import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -12,6 +14,7 @@ class UploadPolicyTest {
             classifyUpload(
                 statusCode = 202,
                 submittedCount = 3,
+                schemaVersion = "1.0",
                 receivedCount = 3,
                 storedCount = 2,
                 duplicateCount = 1,
@@ -24,12 +27,13 @@ class UploadPolicyTest {
     }
 
     @Test
-    fun malformedAcceptanceNeverAcknowledgesTheQueue() {
+    fun malformedAcceptanceNeverAcknowledgesAndRetriesSafely() {
         assertEquals(
-            UploadOutcome.REJECTED,
+            UploadOutcome.RETRY,
             classifyUpload(
                 statusCode = 202,
                 submittedCount = 3,
+                schemaVersion = "1.0",
                 receivedCount = 2,
                 storedCount = 2,
                 duplicateCount = 0,
@@ -37,31 +41,107 @@ class UploadPolicyTest {
         )
         assertEquals(
             emptySet<String>(),
-            acknowledgedEventIds(UploadOutcome.REJECTED, setOf("event")),
+            acknowledgedEventIds(UploadOutcome.RETRY, setOf("event")),
         )
         assertEquals(
-            UploadOutcome.REJECTED,
-            classifyUpload(202, 3, receivedCount = 3, storedCount = -1, duplicateCount = 4),
+            UploadOutcome.RETRY,
+            classifyUpload(
+                202,
+                3,
+                "1.0",
+                receivedCount = 3,
+                storedCount = -1,
+                duplicateCount = 4,
+            ),
         )
         assertEquals(
-            UploadOutcome.REJECTED,
-            classifyUpload(202, 3, receivedCount = 3, storedCount = 4, duplicateCount = -1),
+            UploadOutcome.RETRY,
+            classifyUpload(
+                202,
+                3,
+                "1.0",
+                receivedCount = 3,
+                storedCount = 4,
+                duplicateCount = -1,
+            ),
         )
         assertEquals(
-            UploadOutcome.REJECTED,
-            classifyUpload(202, 3, receivedCount = 3, storedCount = 3),
+            UploadOutcome.RETRY,
+            classifyUpload(202, 3, "1.0", receivedCount = 3, storedCount = 3),
         )
         assertEquals(
-            UploadOutcome.REJECTED,
-            classifyUpload(202, 0, receivedCount = 0, storedCount = 0, duplicateCount = 0),
+            UploadOutcome.RETRY,
+            classifyUpload(
+                202,
+                0,
+                "1.0",
+                receivedCount = 0,
+                storedCount = 0,
+                duplicateCount = 0,
+            ),
+        )
+        assertEquals(
+            UploadOutcome.RETRY,
+            classifyUpload(
+                202,
+                1,
+                "2.0",
+                receivedCount = 1,
+                storedCount = 1,
+                duplicateCount = 0,
+            ),
         )
     }
 
     @Test
     fun temporaryFailuresRemainQueuedForRetry() {
         assertEquals(UploadOutcome.RETRY, classifyUpload(408, 1))
+        assertEquals(UploadOutcome.RETRY, classifyUpload(425, 1))
         assertEquals(UploadOutcome.RETRY, classifyUpload(429, 1))
         assertEquals(UploadOutcome.RETRY, classifyUpload(503, 1))
+    }
+
+    @Test
+    fun recordSpecificRejectionsAreIsolatedWithoutStarvingLaterWork() {
+        assertEquals(UploadOutcome.PERMANENT_RECORD_REJECTION, classifyUpload(409, 2))
+        assertEquals(UploadOutcome.PERMANENT_RECORD_REJECTION, classifyUpload(422, 2))
+        val first = draft("00000000-0000-0000-0000-000000000001")
+        val second = draft("00000000-0000-0000-0000-000000000002")
+        val attemptedSizes = mutableListOf<Int>()
+
+        val acceptedFirst = resolvePendingUpload(listOf(first, second)) { attempted ->
+            attemptedSizes += attempted.size
+            if (attempted.size == 1) UploadOutcome.ACCEPTED else {
+                UploadOutcome.PERMANENT_RECORD_REJECTION
+            }
+        }
+
+        assertEquals(listOf(2, 1), attemptedSizes)
+        assertEquals(UploadOutcome.ACCEPTED, acceptedFirst.outcome)
+        assertEquals(setOf(first.eventId), acceptedFirst.acknowledgedEventIds)
+        assertEquals(null, acceptedFirst.permanentlyRejectedEventId)
+
+        val rejectedFirst = resolvePendingUpload(listOf(first, second)) {
+            UploadOutcome.PERMANENT_RECORD_REJECTION
+        }
+        assertEquals(UploadOutcome.PERMANENT_RECORD_REJECTION, rejectedFirst.outcome)
+        assertEquals(emptySet<String>(), rejectedFirst.acknowledgedEventIds)
+        assertEquals(first.eventId, rejectedFirst.permanentlyRejectedEventId)
+    }
+
+    @Test
+    fun brokenTruncatedAndOversizedAcceptanceBodiesRetryWithoutAcknowledgement() {
+        val failures = listOf<() -> java.io.InputStream>(
+            { throw IOException("disconnected") },
+            { ByteArrayInputStream("{\"schema_version\":\"1.0\"".toByteArray()) },
+            { ByteArrayInputStream("x".repeat(16 * 1_024 + 1).toByteArray()) },
+        )
+
+        failures.forEach { responseBody ->
+            val outcome = classifyUploadResponse(202, 1, responseBody)
+            assertEquals(UploadOutcome.RETRY, outcome)
+            assertEquals(emptySet<String>(), acknowledgedEventIds(outcome, setOf("event")))
+        }
     }
 
     @Test
@@ -88,4 +168,17 @@ class UploadPolicyTest {
             }
         }
     }
+
+    private fun draft(eventId: String): RoadObservationDraft = RoadObservationDraft(
+        eventId = eventId,
+        detectedAtMillis = 1_000,
+        latitude = 26.1445,
+        longitude = 91.7362,
+        locationAccuracyMetres = 4.0,
+        speedMetresPerSecond = 5.0,
+        kind = ObservationKind.ROAD_DAMAGE,
+        severity = 0.7,
+        confidence = 0.8,
+        detectorVersion = "test",
+    )
 }

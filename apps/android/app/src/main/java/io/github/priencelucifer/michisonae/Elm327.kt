@@ -242,9 +242,11 @@ internal object Elm327Parser {
                 (it.matches(Regex("[0-9A-F]{3}")) ||
                     it.matches(Regex("[0-9A-F]{8}")))
         }
-        var compact = tokens.drop(if (spacedHeader == null) 0 else 1)
-            .joinToString("")
-            .filter { it in '0'..'9' || it in 'A'..'F' }
+        val payloadTokens = tokens.drop(if (spacedHeader == null) 0 else 1)
+        if (payloadTokens.any { token -> token.any { it !in '0'..'9' && it !in 'A'..'F' } }) {
+            return null
+        }
+        var compact = payloadTokens.joinToString("")
         val compactHeader = when {
             compact.length >= 5 &&
                 compact.length % 2 == 1 &&

@@ -158,4 +158,72 @@ class HazardSnapshotsTest {
             shouldMigrateLegacyHazardCache(indexExists = true, legacyExists = true),
         )
     }
+
+    @Test
+    fun corruptedSnapshotFieldsFailClosed() {
+        val valid = validSnapshotJson()
+        val corruptions = listOf(
+            valid.replace("\"schema_version\":\"1.0\"", "\"schema_version\":\"2.0\""),
+            valid.replace("\"hazard_count\":1", "\"hazard_count\":2"),
+            valid.replace("\"kind\":\"road_damage\"", "\"kind\":\"unknown\""),
+            valid.replace("\"contributor_count\":2", "\"contributor_count\":1"),
+            valid.replace("\"latitude\":26.1445", "\"latitude\":91.0"),
+            valid.dropLast(1),
+        )
+
+        corruptions.forEach { corrupted ->
+            assertTrue(runCatching { parseRegionalHazardSnapshot(corrupted) }.isFailure)
+        }
+    }
+
+    @Test
+    fun validSnapshotReplayPreservesEveryPublicField() {
+        val snapshot = parseRegionalHazardSnapshot(validSnapshotJson())
+
+        assertEquals("gh5:wh9hx", snapshot.regionId)
+        assertEquals("a".repeat(64), snapshot.version)
+        assertEquals(1_767_225_600_000L, snapshot.generatedAtMillis)
+        assertEquals(PublicHazardKind.ROAD_DAMAGE, snapshot.hazards.single().kind)
+        assertEquals(2, snapshot.hazards.single().contributorCount)
+    }
+
+    @Test
+    fun corruptedCacheIndexesCannotSelectAnUnlistedOrDuplicateRegion() {
+        listOf(
+            """{"schema_version":1,"current_region_id":"gh5:aaaaa","regions":[]}""",
+            """{"schema_version":1,"current_region_id":"gh5:aaaaa","regions":["gh5:aaaaa","gh5:aaaaa"]}""",
+            """{"schema_version":1,"current_region_id":"bad","regions":["bad"]}""",
+        ).forEach { corrupted ->
+            assertTrue(runCatching { decodeHazardCacheIndex(corrupted) }.isFailure)
+        }
+    }
+
+    @Test
+    fun elapsedClockRollbackCannotSuppressARegionRefresh() {
+        val gate = RegionalSnapshotRefreshGate(refreshIntervalMillis = 60_000)
+
+        assertEquals(true, gate.shouldRefresh("gh5:aaaaa", 120_000))
+        assertEquals(true, gate.shouldRefresh("gh5:aaaaa", 1_000))
+        assertEquals(false, gate.shouldRefresh("gh5:aaaaa", 1_001))
+    }
+
+    private fun validSnapshotJson(): String =
+        """
+        {
+          "schema_version":"1.0",
+          "region_id":"gh5:wh9hx",
+          "version":"${"a".repeat(64)}",
+          "generated_at":"2026-01-01T00:00:00Z",
+          "hazard_count":1,
+          "hazards":[{
+            "hazard_id":"${"b".repeat(24)}",
+            "kind":"road_damage",
+            "latitude":26.1445,
+            "longitude":91.7362,
+            "severity":0.7,
+            "confidence":0.8,
+            "contributor_count":2
+          }]
+        }
+        """.trimIndent()
 }

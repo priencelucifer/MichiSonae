@@ -170,7 +170,8 @@ internal class PhoneRoadHazardDetector(
         val previousTimestampMillis = lastTimestampMillis
         if (
             timestampMillis < 0 ||
-            previousTimestampMillis?.let { timestampMillis <= it } == true
+            previousTimestampMillis?.let { timestampMillis <= it } == true ||
+            !sample.hasValidSensorValues()
         ) {
             return null
         }
@@ -184,7 +185,7 @@ internal class PhoneRoadHazardDetector(
         val impact = abs(sample.verticalLinearAccelerationG)
         val multiplier = vehicleClass.roadImpactThresholdMultiplier
         if (impact > tuning.maximumAccelerationG) {
-            resetSegment()
+            resetRoughSegment()
             return null
         }
         if (impact <= tuning.impactReleaseThresholdG * multiplier) {
@@ -222,19 +223,25 @@ internal class PhoneRoadHazardDetector(
 
     private fun RoadSample.isUsable(drivingState: DrivingState): Boolean =
         drivingState == DrivingState.DRIVING &&
-            speedKph.isFinite() &&
-            speedAccuracyKph.isFinite() &&
-            locationAccuracyMetres.isFinite() &&
-            verticalLinearAccelerationG.isFinite() &&
             speedKph in 0.0..MAX_SPEED_KPH &&
             speedAccuracyKph in 0.0..MAX_SPEED_ACCURACY_KPH &&
             speedKph - speedAccuracyKph >= tuning.minimumSpeedKph &&
             locationAccuracyMetres in 0.0..tuning.maximumLocationAccuracyMetres &&
             locationAgeMillis in 0..tuning.maximumLocationAgeMillis
 
-    private fun resetSegment() {
+    private fun RoadSample.hasValidSensorValues(): Boolean =
+        speedKph.isFinite() &&
+            speedAccuracyKph.isFinite() &&
+            locationAccuracyMetres.isFinite() &&
+            verticalLinearAccelerationG.isFinite()
+
+    private fun resetRoughSegment() {
         roughSinceMillis = null
         roughReported = false
+    }
+
+    private fun resetSegment() {
+        resetRoughSegment()
         impactArmed = true
     }
 

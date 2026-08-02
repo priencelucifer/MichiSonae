@@ -1,30 +1,53 @@
 # MichiSonae Production Master Plan (RoadSense / Craterly)
 
-**Version:** 1.4
+**Version:** 1.5
 
-**Prepared:** 28 July 2026
+**Prepared:** 2 August 2026
 
-**Status:** Backend v1 implementation complete; Android and hardware remain
-active future implementation
+**Status:** Backend v1 and the dependency-light Android owner-alpha foundation
+are implemented. Physical-device, road-calibration, live-provider and optional
+hardware validation remain active release gates.
 **Scope:** `Roadsense`, `Roadsense_hardware`, `Roadsense_Application`, and `Craterly`
 
 ## 1. Executive decision
 
 The project should move forward as one product and one canonical repository:
 
-- Use **`Craterly` as the canonical monorepo**. Rename it later only after the public product name is settled.
+- Use **`MichiSonae` as the canonical monorepo**. The product name and repository consolidation are complete.
 - Treat the older `Roadsense`, `Roadsense_hardware`, and `Roadsense_Application` repositories as migration sources, then archive them as read-only.
-- Use **one mobile client: native Kotlin/Jetpack Compose**. Craterly pull request #2 is the starting point, subject to the production blockers and parity gates in this plan.
+- Use **one mobile client: native Kotlin/Jetpack Compose**. iOS, Flutter and a second active mobile stack remain out of scope.
 - Make the first production release an **individual-driver product for Assam**: automatically detect driving, warn about potholes and rough roads, and remain useful without an external RoadSense device or a user account.
 - Include **read-only OBD-II over Bluetooth** in the active Android scope. The phone connects to an adapter plugged into the car's OBD-II port. Present live vehicle data in simple language, classify trouble codes with a vetted deterministic policy, optionally use a constrained local model to explain those verified facts, recommend nearby service centers, and provide conservative low-fuel guidance based on current direction and nearby options.
 - Make the optional RoadSense accessory and the phone **independent pothole/rough-road observers**. When both are available, fuse matching events into one stronger observation instead of generating duplicate warnings or reports.
 - Give MichiSonae an optional **offline “car voice”**: short validated warnings and explanations are spoken through local Android text-to-speech. Gemma may simplify approved facts, but it never decides severity, fuel reachability, or emergency status.
 - Keep **LoRa mesh networking on the future TODO list**. It is not part of the current implementation or launch path.
-- Replace the current Postgres-plus-Redis dual write with a **transactional outbox**, add event idempotency, persist the mobile upload queue, and make Redis a cache/transport optimization rather than the system of record.
+- Keep the implemented PostgreSQL **transactional outbox**, event idempotency and durable mobile upload queue as the source-of-truth path. Redis remains only a cache/transport optimization.
 - Serve versioned hazard snapshots through a CDN so a large read audience does not translate directly into database traffic.
 - Do not claim “production ready” from unit-test counts alone. Release readiness requires physical-device testing, real-road labeled data, privacy and Play policy review, load tests, disaster recovery tests, and measured service-level objectives.
 
 The project owner has confirmed that the product is Android-only for the foreseeable future. The production client will stay native Kotlin/Jetpack Compose; iOS and Flutter are out of scope after required migration work is complete.
+
+### 1.1 Implementation checkpoint — 2 August 2026
+
+- Backend v1 has durable, idempotent observation ingestion, an outbox,
+  retry-safe projection, cacheable regional snapshots, anonymous installation
+  security, lifecycle operations, observability, backup/restore checks and an
+  invited-alpha load gate.
+- Android has automatic phone-only detection, a durable offline queue,
+  background retry/recovery, offline hazard snapshots, strictly read-only
+  ELM327 support, deterministic diagnostic/fuel policy, local warnings and
+  stopped-only manual road-hazard reporting.
+- Shared golden ingestion vectors and deterministic failure/fuzz simulators
+  cover the Android/backend boundary without introducing generated-client or
+  test-framework dependencies.
+- Release policy checks reject committed secrets/endpoints, forbidden raw or
+  diagnostic uploads, unsafe observation fields and ECU commands outside the
+  reviewed Mode 01/03 read-only boundary.
+- Owner-alpha release claims still require physical screen-off/OEM testing,
+  labelled on-road calibration, real ELM327/car coverage, a reviewed live
+  station/service provider, signed distribution and privacy/Play review.
+- LoRa mesh, crash/SOS and authority delivery remain future work requiring the
+  approved future-phase ADR; they are not v1 runtime modules.
 
 ## 2. Product aim reconstructed from the repositories
 

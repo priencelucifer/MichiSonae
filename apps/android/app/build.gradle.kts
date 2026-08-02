@@ -32,6 +32,12 @@ android {
         buildConfig = true
     }
 
+    sourceSets {
+        getByName("test").resources.srcDir(
+            rootProject.file("../../contracts/test-vectors"),
+        )
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
