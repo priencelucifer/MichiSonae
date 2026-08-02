@@ -279,6 +279,7 @@ components:
         - observations
       properties:
         schema_version:
+          type: string
           const: "1.0"
         observations:
           type: array
@@ -296,6 +297,7 @@ components:
         - duplicate_count
       properties:
         schema_version:
+          type: string
           const: "1.0"
         received_count:
           type: integer
