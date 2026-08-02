@@ -79,8 +79,8 @@ class AndroidBackendContractGoldenTest {
     private fun assertJsonEquals(expected: Any, actual: Any) {
         when (expected) {
             is JSONObject -> {
-                assertEquals(expected.keySet(), (actual as JSONObject).keySet())
-                expected.keySet().forEach { key ->
+                assertEquals(expected.keysSet(), (actual as JSONObject).keysSet())
+                expected.keysSet().forEach { key ->
                     assertJsonEquals(expected.get(key), actual.get(key))
                 }
             }
@@ -97,4 +97,6 @@ class AndroidBackendContractGoldenTest {
             else -> assertTrue("Expected $expected, received $actual", expected == actual)
         }
     }
+
+    private fun JSONObject.keysSet(): Set<String> = keys().asSequence().toSet()
 }
