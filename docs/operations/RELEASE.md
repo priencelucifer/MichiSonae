@@ -7,6 +7,15 @@ Build the backend once from a reviewed commit. Identify it everywhere as
 results, and promote that exact digest from CI to staging and then production.
 Never rebuild a production artifact from the same Git tag.
 
+Before publishing any artifact, run
+`python infra/scripts/verify_repository_policy.py`. CI blocks high-confidence
+secret material anywhere in the repository, real service or hardware
+endpoints, unreviewed Android network egress, known diagnostic/raw-trace types
+at the network boundary, changes to the minimized observation upload
+allow-list, and any ELM327 command outside typed Mode 01/03 reads. This
+dependency-free gate is deliberately narrow; Trivy remains the broader secret
+and misconfiguration scan, and both gates must pass.
+
 ## Expand, migrate, contract
 
 1. Confirm all CI jobs are green: database integration, restore/rebuild,

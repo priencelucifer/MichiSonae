@@ -48,6 +48,10 @@ jobs:
               json.loads(path.read_text(encoding="utf-8"))
               print(f"valid JSON: {path}")
           PY
+      - name: Enforce privacy and release policy
+        run: |
+          python -m unittest infra.scripts.test_verify_repository_policy
+          python infra/scripts/verify_repository_policy.py
       - name: Exercise deterministic simulator
         run: |
           python simulator/generate_road_observations.py --count 5 --seed 7 > observations.jsonl

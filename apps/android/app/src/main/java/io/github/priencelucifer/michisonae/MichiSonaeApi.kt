@@ -1,5 +1,6 @@
 package io.github.priencelucifer.michisonae
 
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -17,8 +18,15 @@ internal enum class UploadOutcome {
     ACCEPTED,
     AUTH_EXPIRED,
     RETRY,
+    PERMANENT_RECORD_REJECTION,
     REJECTED,
 }
+
+internal data class PendingUploadResolution(
+    val outcome: UploadOutcome,
+    val acknowledgedEventIds: Set<String> = emptySet(),
+    val permanentlyRejectedEventId: String? = null,
+)
 
 internal enum class RevocationOutcome {
     REVOKED,
@@ -31,14 +39,53 @@ internal fun acknowledgedEventIds(
     submittedEventIds: Set<String>,
 ): Set<String> = if (outcome == UploadOutcome.ACCEPTED) submittedEventIds else emptySet()
 
+internal fun resolvePendingUpload(
+    pending: List<RoadObservationDraft>,
+    upload: (List<RoadObservationDraft>) -> UploadOutcome,
+): PendingUploadResolution {
+    require(pending.isNotEmpty())
+    val batchOutcome = upload(pending)
+    if (batchOutcome == UploadOutcome.ACCEPTED) {
+        return PendingUploadResolution(
+            outcome = batchOutcome,
+            acknowledgedEventIds = pending.mapTo(mutableSetOf()) { it.eventId },
+        )
+    }
+    if (batchOutcome != UploadOutcome.PERMANENT_RECORD_REJECTION) {
+        return PendingUploadResolution(batchOutcome)
+    }
+
+    val first = pending.first()
+    val isolatedOutcome = if (pending.size == 1) {
+        batchOutcome
+    } else {
+        upload(listOf(first))
+    }
+    return when (isolatedOutcome) {
+        UploadOutcome.ACCEPTED -> PendingUploadResolution(
+            outcome = isolatedOutcome,
+            acknowledgedEventIds = setOf(first.eventId),
+        )
+
+        UploadOutcome.PERMANENT_RECORD_REJECTION -> PendingUploadResolution(
+            outcome = isolatedOutcome,
+            permanentlyRejectedEventId = first.eventId,
+        )
+
+        else -> PendingUploadResolution(isolatedOutcome)
+    }
+}
+
 internal fun classifyUpload(
     statusCode: Int,
     submittedCount: Int,
+    schemaVersion: String? = null,
     receivedCount: Int? = null,
     storedCount: Int? = null,
     duplicateCount: Int? = null,
 ): UploadOutcome = when {
     statusCode == 202 &&
+        schemaVersion == "1.0" &&
         submittedCount in 1..100 &&
         receivedCount != null &&
         storedCount != null &&
@@ -49,9 +96,31 @@ internal fun classifyUpload(
         duplicateCount in 0..submittedCount &&
         storedCount + duplicateCount == receivedCount -> UploadOutcome.ACCEPTED
 
+    statusCode == 202 -> UploadOutcome.RETRY
     statusCode == 401 -> UploadOutcome.AUTH_EXPIRED
-    statusCode == 408 || statusCode == 429 || statusCode >= 500 -> UploadOutcome.RETRY
+    statusCode == 409 || statusCode == 422 -> UploadOutcome.PERMANENT_RECORD_REJECTION
+    statusCode == 408 || statusCode == 425 || statusCode == 429 ||
+        statusCode >= 500 -> UploadOutcome.RETRY
     else -> UploadOutcome.REJECTED
+}
+
+internal fun classifyUploadResponse(
+    statusCode: Int,
+    submittedCount: Int,
+    responseBody: () -> InputStream,
+): UploadOutcome {
+    if (statusCode != 202) return classifyUpload(statusCode, submittedCount)
+    val response = runCatching {
+        responseBody().use { JSONObject(it.readUtf8AtMost(MAX_API_RESPONSE_BYTES)) }
+    }.getOrNull()
+    return classifyUpload(
+        statusCode = statusCode,
+        submittedCount = submittedCount,
+        schemaVersion = response.strictString("schema_version"),
+        receivedCount = response.strictInt("received_count"),
+        storedCount = response.strictInt("stored_count"),
+        duplicateCount = response.strictInt("duplicate_count"),
+    )
 }
 
 internal fun bearerAuthorization(accessToken: String): String {
@@ -118,21 +187,10 @@ internal class MichiSonaeApi(baseUrl: String) {
             val status = connection.send(
                 RoadObservationDraft.batchJson(credentials.installationId, observations),
             )
-            val response = if (status == 202) {
-                runCatching {
-                    connection.inputStream.use {
-                        JSONObject(it.readUtf8AtMost(MAX_API_RESPONSE_BYTES))
-                    }
-                }.getOrNull()
-            } else {
-                null
-            }
-            classifyUpload(
+            classifyUploadResponse(
                 statusCode = status,
                 submittedCount = observations.size,
-                receivedCount = response.strictInt("received_count"),
-                storedCount = response.strictInt("stored_count"),
-                duplicateCount = response.strictInt("duplicate_count"),
+                responseBody = { connection.inputStream },
             )
         } finally {
             connection.disconnect()
@@ -145,12 +203,13 @@ internal class MichiSonaeApi(baseUrl: String) {
     ): UploadOutcome? {
         val pending = queue.pending()
         if (pending.isEmpty()) return null
-        val outcome = upload(credentials, pending)
+        val resolution = resolvePendingUpload(pending) { upload(credentials, it) }
         queue.acknowledgeAfterDurableAcceptance(
-            eventIds = pending.mapTo(mutableSetOf()) { it.eventId },
-            outcome = outcome,
+            eventIds = resolution.acknowledgedEventIds,
+            outcome = resolution.outcome,
         )
-        return outcome
+        resolution.permanentlyRejectedEventId?.let(queue::discardPermanentlyRejected)
+        return resolution.outcome
     }
 
     fun revoke(accessToken: String): RevocationOutcome {
@@ -212,8 +271,11 @@ internal class MichiSonaeApi(baseUrl: String) {
         return responseCode
     }
 
-    private fun JSONObject?.strictInt(name: String): Int? = this?.opt(name) as? Int
 }
+
+private fun JSONObject?.strictInt(name: String): Int? = this?.opt(name) as? Int
+
+private fun JSONObject?.strictString(name: String): String? = this?.opt(name) as? String
 
 internal class ApiUnavailable(val statusCode: Int) :
     Exception("MichiSonae API request failed")

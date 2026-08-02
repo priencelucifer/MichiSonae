@@ -18,9 +18,11 @@ flooding, manhole hazards, road construction and disabled vehicles. These use
 the same minimized payload and durable acceptance rule; no image or trip
 history is part of the contract.
 
-Generated clients and golden vectors will be added after the first contract
-review. Breaking changes create a new major schema rather than silently
-changing an existing file.
+`test-vectors/observation-ingestion.v1.json` is the shared Android/backend
+golden suite for initial, overlapping and duplicate-retry observation batches.
+Both components must consume the same committed vectors. Generated clients remain
+deferred until repetition justifies them; breaking changes create a new major
+schema rather than silently changing an existing file.
 
 Regional hazard reads are anonymous and publicly cacheable. Current snapshots
 support `ETag`/`If-None-Match`; content-addressed versions are immutable. An

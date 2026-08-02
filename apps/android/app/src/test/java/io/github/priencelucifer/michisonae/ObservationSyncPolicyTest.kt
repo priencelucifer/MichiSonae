@@ -25,9 +25,24 @@ class ObservationSyncPolicyTest {
     }
 
     @Test
+    fun workEnqueuedDuringAnEmptyRunIsRetried() {
+        assertTrue(shouldRetrySync(null, true))
+    }
+
+    @Test
+    fun isolatedPermanentRejectionContinuesOnlyWhenWorkRemains() {
+        assertTrue(shouldRetrySync(UploadOutcome.PERMANENT_RECORD_REJECTION, true))
+        assertFalse(shouldRetrySync(UploadOutcome.PERMANENT_RECORD_REJECTION, false))
+    }
+
+    @Test
     fun latestResultKeepsRealFailureState() {
         assertEquals(LatestSyncStatus.SUCCEEDED, latestSyncStatus(UploadOutcome.ACCEPTED))
         assertEquals(LatestSyncStatus.RETRYING, latestSyncStatus(UploadOutcome.RETRY))
+        assertEquals(
+            LatestSyncStatus.REJECTED,
+            latestSyncStatus(UploadOutcome.PERMANENT_RECORD_REJECTION),
+        )
         assertEquals(LatestSyncStatus.REJECTED, latestSyncStatus(UploadOutcome.REJECTED))
     }
 

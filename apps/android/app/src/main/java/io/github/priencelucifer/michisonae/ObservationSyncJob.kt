@@ -15,7 +15,9 @@ internal fun shouldRetrySync(
 ): Boolean = when (outcome) {
     UploadOutcome.ACCEPTED -> hasMorePending
     UploadOutcome.AUTH_EXPIRED, UploadOutcome.RETRY -> true
-    UploadOutcome.REJECTED, null -> false
+    UploadOutcome.PERMANENT_RECORD_REJECTION -> hasMorePending
+    UploadOutcome.REJECTED -> false
+    null -> hasMorePending
 }
 
 internal data class BackgroundSyncPolicy(
@@ -45,7 +47,9 @@ internal enum class LatestSyncStatus {
 internal fun latestSyncStatus(outcome: UploadOutcome?): LatestSyncStatus = when (outcome) {
     UploadOutcome.ACCEPTED, null -> LatestSyncStatus.SUCCEEDED
     UploadOutcome.AUTH_EXPIRED, UploadOutcome.RETRY -> LatestSyncStatus.RETRYING
-    UploadOutcome.REJECTED -> LatestSyncStatus.REJECTED
+    UploadOutcome.PERMANENT_RECORD_REJECTION,
+    UploadOutcome.REJECTED,
+    -> LatestSyncStatus.REJECTED
 }
 
 internal fun syncScheduleAllowed(deletionInProgress: Boolean): Boolean =

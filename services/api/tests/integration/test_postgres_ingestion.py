@@ -131,6 +131,44 @@ def test_retry_produces_one_observation_and_one_outbox_event() -> None:
     assert table_counts() == (1, 1)
 
 
+def test_overlapping_batch_stores_only_new_events_and_remains_idempotent() -> None:
+    existing_event = observation()
+    new_event = observation()
+    initial = batch(existing_event)
+    overlapping = batch(existing_event, new_event)
+
+    with TestClient(create_app(settings())) as client:
+        headers = authorize(client, initial)
+        installation_id = existing_event["installation_id"]
+        new_event["installation_id"] = installation_id
+        first = client.post("/v1/observations:batch", json=initial, headers=headers)
+        partial_retry = client.post(
+            "/v1/observations:batch",
+            json=overlapping,
+            headers=headers,
+        )
+        identical_retry = client.post(
+            "/v1/observations:batch",
+            json=overlapping,
+            headers=headers,
+        )
+
+    assert first.status_code == partial_retry.status_code == identical_retry.status_code == 202
+    assert partial_retry.json() == {
+        "schema_version": "1.0",
+        "received_count": 2,
+        "stored_count": 1,
+        "duplicate_count": 1,
+    }
+    assert identical_retry.json() == {
+        "schema_version": "1.0",
+        "received_count": 2,
+        "stored_count": 0,
+        "duplicate_count": 2,
+    }
+    assert table_counts() == (2, 2)
+
+
 def test_maximum_batch_is_stored_and_queued_atomically() -> None:
     payload = batch(*(observation() for _ in range(100)))
 

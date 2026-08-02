@@ -1,0 +1,92 @@
+{
+  "vector_version": "1.0",
+  "installation_id": "anonymous-install-0001",
+  "initial": {
+    "request": {
+      "schema_version": "1.0",
+      "observations": [
+        {
+          "event_id": "10000000-0000-4000-8000-000000000001",
+          "installation_id": "anonymous-install-0001",
+          "detected_at": "2026-01-02T03:04:05Z",
+          "latitude": 26.1445,
+          "longitude": 91.7362,
+          "location_accuracy_m": 8.0,
+          "speed_mps": 12.0,
+          "kind": "road_damage",
+          "severity": 0.7,
+          "confidence": 0.8,
+          "source": "phone",
+          "detector_version": "phone-v1"
+        },
+        {
+          "event_id": "10000000-0000-4000-8000-000000000002",
+          "installation_id": "anonymous-install-0001",
+          "detected_at": "2026-01-02T03:04:06Z",
+          "latitude": 26.145,
+          "longitude": 91.737,
+          "location_accuracy_m": 6.5,
+          "speed_mps": 0.0,
+          "kind": "obstruction",
+          "severity": 0.6,
+          "confidence": 0.75,
+          "source": "phone",
+          "detector_version": "manual-v1"
+        }
+      ]
+    },
+    "acceptance": {
+      "schema_version": "1.0",
+      "received_count": 2,
+      "stored_count": 2,
+      "duplicate_count": 0
+    }
+  },
+  "overlap": {
+    "request": {
+      "schema_version": "1.0",
+      "observations": [
+        {
+          "event_id": "10000000-0000-4000-8000-000000000002",
+          "installation_id": "anonymous-install-0001",
+          "detected_at": "2026-01-02T03:04:06Z",
+          "latitude": 26.145,
+          "longitude": 91.737,
+          "location_accuracy_m": 6.5,
+          "speed_mps": 0.0,
+          "kind": "obstruction",
+          "severity": 0.6,
+          "confidence": 0.75,
+          "source": "phone",
+          "detector_version": "manual-v1"
+        },
+        {
+          "event_id": "10000000-0000-4000-8000-000000000003",
+          "installation_id": "anonymous-install-0001",
+          "detected_at": "2026-01-02T03:04:07Z",
+          "latitude": 26.146,
+          "longitude": 91.738,
+          "location_accuracy_m": 7.0,
+          "speed_mps": 9.5,
+          "kind": "rough_road",
+          "severity": 0.55,
+          "confidence": 0.7,
+          "source": "phone",
+          "detector_version": "phone-v1"
+        }
+      ]
+    },
+    "acceptance": {
+      "schema_version": "1.0",
+      "received_count": 2,
+      "stored_count": 1,
+      "duplicate_count": 1
+    },
+    "identical_retry_acceptance": {
+      "schema_version": "1.0",
+      "received_count": 2,
+      "stored_count": 0,
+      "duplicate_count": 2
+    }
+  }
+}

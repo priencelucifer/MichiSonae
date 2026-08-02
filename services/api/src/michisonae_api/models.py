@@ -68,7 +68,9 @@ class ObservationBatch(BaseModel):
 
 
 class ObservationBatchAccepted(BaseModel):
-    schema_version: Literal["1.0"] = "1.0"
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"]
     received_count: int = Field(ge=1, le=100)
     stored_count: int = Field(ge=0, le=100)
     duplicate_count: int = Field(ge=0, le=100)

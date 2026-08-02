@@ -67,6 +67,29 @@ class Elm327Test {
     }
 
     @Test
+    fun truncatedOutOfOrderOrCrossEcuFramesNeverBecomeTroubleCodes() {
+        listOf(
+            "7E8 10 06 43 01 33 02\r>",
+            "7E8 10 06 43 01 33 02\r7E8 22 10 00 00\r>",
+            "7E8 10 06 43 01 33 02\r7E9 21 10 00 00\r>",
+        ).forEach { corrupted ->
+            assertEquals(emptyList<String>(), Elm327Parser.troubleCodes(corrupted))
+        }
+    }
+
+    @Test
+    fun unrelatedAndMismatchedPidFramesCannotSpoofAReading() {
+        listOf(
+            "41 0D 7F\r>",
+            "DE AD BE EF\r>",
+            "41 0C 1A\r>",
+            "NO DATA\r41 0C 1A F8\r>",
+        ).forEach { response ->
+            assertNull(Elm327Parser.reading(Elm327Command.ENGINE_RPM, response))
+        }
+    }
+
+    @Test
     fun normalizesCheapCloneEchoHeadersLengthAndCompactFrames() {
         val response = "010C\rSEARCHING...\r7E8 04 41 0C 1A F8\r>"
         assertEquals(
@@ -177,5 +200,16 @@ class Elm327Test {
                 emptySet(),
             ),
         )
+    }
+
+    @Test
+    fun readOnlyAllowlistIsExactlyInitializationModeOneAndModeThree() {
+        Elm327Command.entries.forEach { command ->
+            assertTrue(command.isAllowedReadOnlyCommand())
+            assertTrue(
+                command.wireValue in setOf("ATE0", "ATSP0", "03") ||
+                    command.wireValue.matches(Regex("01[0-9A-F]{2}")),
+            )
+        }
     }
 }

@@ -49,6 +49,62 @@ class Elm327ConnectionTest {
     }
 
     @Test
+    fun repeatedFailuresUseBoundedExponentialRetry() {
+        var state: Elm327ConnectionState = Elm327ConnectionState.Connecting(1)
+        val delays = buildList {
+            repeat(8) {
+                val failed = Elm327ConnectionMachine.transition(
+                    state,
+                    Elm327ConnectionEvent.ConnectionFailed("offline"),
+                )
+                val waiting = failed.state as Elm327ConnectionState.WaitingToRetry
+                add(waiting.delayMs)
+                assertEquals(
+                    listOf(
+                        Elm327ConnectionAction.CloseSocket,
+                        Elm327ConnectionAction.ScheduleRetry(waiting.delayMs),
+                    ),
+                    failed.actions,
+                )
+                state = Elm327ConnectionMachine.transition(
+                    waiting,
+                    Elm327ConnectionEvent.RetryElapsed,
+                ).state
+            }
+        }
+
+        assertEquals(
+            listOf(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L, 30_000L),
+            delays,
+        )
+    }
+
+    @Test
+    fun corruptInitializationResponseFailsClosedIntoRetry() {
+        val waiting = Elm327ConnectionSimulator.connect { command ->
+            if (command == Elm327Command.AUTOMATIC_PROTOCOL) "?\r>" else {
+                Elm327Simulator.response(command)
+            }
+        } as Elm327ConnectionState.WaitingToRetry
+
+        assertEquals(2, waiting.nextAttempt)
+        assertTrue(waiting.reason.contains("Automatic protocol"))
+    }
+
+    @Test
+    fun noDataDuringDiscoveryProducesAReadyStateWithNoLivePids() {
+        val ready = Elm327ConnectionSimulator.connect { command ->
+            if (command == Elm327Command.SUPPORTED_PIDS) "NO DATA\r>" else {
+                Elm327Simulator.response(command)
+            }
+        } as Elm327ConnectionState.Ready
+
+        assertEquals(emptySet<Int>(), ready.supportedPids)
+        assertFalse(ready.canQuery(Elm327Command.ENGINE_RPM))
+        assertTrue(ready.canQuery(Elm327Command.READ_TROUBLE_CODES))
+    }
+
+    @Test
     fun everySendActionIsFromTheReadOnlyWhitelist() {
         Elm327Command.entries.forEach { assertTrue(it.isAllowedReadOnlyCommand()) }
 
