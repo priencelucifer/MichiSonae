@@ -1,5 +1,12 @@
 package io.github.priencelucifer.michisonae
 
+import android.bluetooth.BluetoothDevice
+import java.io.Closeable
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+
 internal sealed interface Elm327ConnectionState {
     val statusText: String
 
@@ -246,6 +253,185 @@ internal object Elm327ConnectionSimulator {
         }
         return transition.state
     }
+}
+
+internal interface Elm327Transport : Closeable {
+    fun open()
+    fun query(command: Elm327Command): String
+}
+
+internal class Elm327BluetoothTransport(
+    private val device: BluetoothDevice,
+) : Elm327Transport {
+    private val lock = Any()
+    private var client: Elm327BluetoothClient? = null
+    private var closed = false
+
+    override fun open() {
+        synchronized(lock) {
+            check(client == null && !closed) { "OBD transport is not available" }
+        }
+        val connected = Elm327BluetoothClient.connect(device)
+        synchronized(lock) {
+            if (closed) {
+                connected.close()
+                throw IOException("OBD transport was closed while connecting")
+            }
+            client = connected
+        }
+    }
+
+    override fun query(command: Elm327Command): String {
+        val connected = synchronized(lock) {
+            checkNotNull(client) { "OBD transport is not open" }
+        }
+        return connected.query(command)
+    }
+
+    override fun close() {
+        val connected = synchronized(lock) {
+            closed = true
+            client.also { client = null }
+        }
+        connected?.close()
+    }
+}
+
+internal class Elm327ConnectionController(
+    private val transportFactory: () -> Elm327Transport,
+    private val onStateChanged: (Elm327ConnectionState) -> Unit = {},
+) : Closeable {
+    constructor(
+        device: BluetoothDevice,
+        onStateChanged: (Elm327ConnectionState) -> Unit = {},
+    ) : this({ Elm327BluetoothTransport(device) }, onStateChanged)
+
+    private val worker = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "elm327-controller").apply { isDaemon = true }
+    }.apply {
+        removeOnCancelPolicy = true
+        setExecuteExistingDelayedTasksAfterShutdownPolicy(false)
+    }
+    @Volatile
+    var state: Elm327ConnectionState = Elm327ConnectionState.Stopped
+        private set
+    @Volatile
+    private var closed = false
+    @Volatile
+    private var transport: Elm327Transport? = null
+
+    fun start() {
+        submit(Elm327ConnectionEvent.Start)
+    }
+
+    fun stop() {
+        submit(Elm327ConnectionEvent.Stop)
+    }
+
+    fun query(
+        command: Elm327Command,
+        callback: (Result<String>) -> Unit,
+    ) {
+        require(command.isAllowedReadOnlyCommand()) { "Only read-only OBD commands are allowed" }
+        if (closed) {
+            callbackSafely(
+                callback,
+                Result.failure(IllegalStateException("OBD adapter is disconnected")),
+            )
+            return
+        }
+        runCatching { worker.execute {
+            val ready = state as? Elm327ConnectionState.Ready
+            if (ready == null || !ready.canQuery(command)) {
+                callbackSafely(
+                    callback,
+                    Result.failure(IllegalStateException("OBD value is not available")),
+                )
+                return@execute
+            }
+            try {
+                callbackSafely(callback, Result.success(checkNotNull(transport).query(command)))
+            } catch (failure: Exception) {
+                callbackSafely(callback, Result.failure(IOException(safeFailureReason(failure))))
+                advance(Elm327ConnectionEvent.ConnectionFailed(safeFailureReason(failure)))
+            }
+        } }.onFailure {
+            callbackSafely(
+                callback,
+                Result.failure(IllegalStateException("OBD adapter is disconnected")),
+            )
+        }
+    }
+
+    private fun submit(event: Elm327ConnectionEvent) {
+        if (!closed && !worker.isShutdown) {
+            worker.execute { advance(event) }
+        }
+    }
+
+    private fun advance(event: Elm327ConnectionEvent) {
+        if (closed) return
+        val transition = Elm327ConnectionMachine.transition(state, event)
+        state = transition.state
+        runCatching { onStateChanged(state) }
+        transition.actions.forEach(::execute)
+    }
+
+    private fun execute(action: Elm327ConnectionAction) {
+        when (action) {
+            Elm327ConnectionAction.OpenSocket -> try {
+                transport = transportFactory()
+                checkNotNull(transport).open()
+                advance(Elm327ConnectionEvent.SocketConnected)
+            } catch (failure: Exception) {
+                runCatching { transport?.close() }
+                transport = null
+                advance(Elm327ConnectionEvent.ConnectionFailed(safeFailureReason(failure)))
+            }
+
+            Elm327ConnectionAction.CloseSocket -> {
+                runCatching { transport?.close() }
+                transport = null
+            }
+
+            is Elm327ConnectionAction.Send -> try {
+                check(action.command.isAllowedReadOnlyCommand())
+                val response = checkNotNull(transport).query(action.command)
+                advance(Elm327ConnectionEvent.CommandSucceeded(action.command, response))
+            } catch (failure: Exception) {
+                advance(Elm327ConnectionEvent.ConnectionFailed(safeFailureReason(failure)))
+            }
+
+            is Elm327ConnectionAction.ScheduleRetry -> worker.schedule(
+                { advance(Elm327ConnectionEvent.RetryElapsed) },
+                action.delayMs,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+    }
+
+    override fun close() {
+        if (closed) return
+        closed = true
+        worker.shutdownNow()
+        runCatching { transport?.close() }
+        transport = null
+        state = Elm327ConnectionState.Stopped
+        runCatching { onStateChanged(state) }
+    }
+}
+
+private fun <T> callbackSafely(
+    callback: (Result<T>) -> Unit,
+    result: Result<T>,
+) {
+    runCatching { callback(result) }
+}
+
+private fun safeFailureReason(failure: Exception): String = when (failure) {
+    is SecurityException -> "Bluetooth permission denied"
+    is SocketTimeoutException -> "adapter timed out"
+    else -> "adapter unavailable"
 }
 
 private val DISCOVERY_COMMANDS = setOf(

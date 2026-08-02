@@ -13,6 +13,11 @@ transactional outbox record are committed. Retrying identical `event_id`
 values is a successful no-op; reusing an ID for different content rejects the
 entire batch with `409`.
 
+The observation taxonomy also accepts stopped-user reports for obstruction,
+flooding, manhole hazards, road construction and disabled vehicles. These use
+the same minimized payload and durable acceptance rule; no image or trip
+history is part of the contract.
+
 Generated clients and golden vectors will be added after the first contract
 review. Breaking changes create a new major schema rather than silently
 changing an existing file.

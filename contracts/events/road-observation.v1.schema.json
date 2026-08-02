@@ -55,7 +55,12 @@
     "kind": {
       "enum": [
         "road_damage",
-        "rough_road"
+        "rough_road",
+        "obstruction",
+        "flooding",
+        "manhole_hazard",
+        "road_construction",
+        "disabled_vehicle"
       ]
     },
     "severity": {

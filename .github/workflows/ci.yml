@@ -17,8 +17,8 @@ jobs:
   structure-and-contracts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify monorepo boundaries
@@ -86,8 +86,8 @@ jobs:
       run:
         working-directory: services/api
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -154,8 +154,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -168,7 +168,7 @@ jobs:
             --no-deps \
             --progress-spinner=off
       - name: Reject committed secrets and critical IaC misconfiguration
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           scan-type: fs
           scan-ref: .
@@ -204,7 +204,7 @@ jobs:
           docker logs "$container_id"
           exit 1
       - name: Reject actionable critical image vulnerabilities
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: michisonae-backend:${{ github.sha }}
           scanners: vuln
@@ -250,8 +250,8 @@ jobs:
       MICHI_PROJECTION_POLL_SECONDS: 0.1
       MICHI_SNAPSHOT_POLL_SECONDS: 0.1
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -296,12 +296,12 @@ jobs:
 
   android:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: apps/android
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -310,8 +310,18 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v6
-      - name: Verify wrapper and build debug APK
-        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug --stacktrace
+      - name: Verify wrapper and dependency pins
+        shell: pwsh
+        run: ./verify-release-inputs.ps1
+      - name: Test, lint and build debug APK
+        run: ./gradlew --no-daemon --write-verification-metadata sha256 testDebugUnitTest lintDebug assembleDebug --stacktrace
+      - name: Upload Gradle dependency verification candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-gradle-verification-${{ github.sha }}
+          path: apps/android/gradle/verification-metadata.xml
+          if-no-files-found: error
+          retention-days: 2
       - name: Upload owner debug APK
         uses: actions/upload-artifact@v7
         with:
@@ -319,6 +329,14 @@ jobs:
           path: apps/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Verify reproducible release APK and size budget
+        run: |
+          ./gradlew --no-daemon clean assembleRelease --stacktrace
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/first-release.apk"
+          ./gradlew --no-daemon clean assembleRelease --stacktrace
+          cmp "$RUNNER_TEMP/first-release.apk" app/build/outputs/apk/release/app-release-unsigned.apk
+          test "$(stat -c %s app/build/outputs/apk/release/app-release-unsigned.apk)" -le 26214400
+          sha256sum app/build/outputs/apk/release/app-release-unsigned.apk
 
   firmware:
     runs-on: ubuntu-latest
@@ -326,8 +344,8 @@ jobs:
       run:
         working-directory: firmware/roadsense
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip

@@ -14,7 +14,7 @@ internal data class BackendStatus(
 )
 
 internal fun backendStatus(
-    pendingUploadCount: Int,
+    pendingUploadCount: Int?,
     hasNetwork: Boolean,
     lastSyncFailureAtMillis: Long?,
     hasCachedSnapshot: Boolean,
@@ -22,7 +22,7 @@ internal fun backendStatus(
     nowMillis: Long,
     backendConfigured: Boolean = true,
 ): BackendStatus {
-    require(pendingUploadCount >= 0)
+    require(pendingUploadCount == null || pendingUploadCount >= 0)
     require(nowMillis >= 0)
     require(lastSyncFailureAtMillis == null || lastSyncFailureAtMillis >= 0)
     val freshness = when {
@@ -43,10 +43,11 @@ internal fun backendStatus(
                 "Sync delayed — saved hazard warnings remain available."
             else -> "Network available for background sync."
         },
-        uploadLabel = if (pendingUploadCount == 0) {
-            "All road reports uploaded."
-        } else {
-            "$pendingUploadCount road report${if (pendingUploadCount == 1) "" else "s"} waiting to upload."
+        uploadLabel = when (pendingUploadCount) {
+            null -> "Queued road reports need local storage recovery; none were marked uploaded."
+            0 -> "All road reports uploaded."
+            else ->
+                "$pendingUploadCount road report${if (pendingUploadCount == 1) "" else "s"} waiting to upload."
         },
         snapshotLabel = when (freshness) {
             SnapshotFreshness.CURRENT -> "Nearby hazard data is current."

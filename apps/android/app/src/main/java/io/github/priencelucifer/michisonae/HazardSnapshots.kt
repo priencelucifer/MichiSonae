@@ -2,7 +2,7 @@ package io.github.priencelucifer.michisonae
 
 import android.content.Context
 import android.util.AtomicFile
-import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -10,14 +10,27 @@ import java.net.URL
 import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import org.json.JSONArray
 import org.json.JSONObject
 
 internal const val MAX_HAZARD_SNAPSHOT_BYTES = 1_048_576
 internal const val MAX_HAZARDS_PER_SNAPSHOT = 5_000
+internal const val MAX_CACHED_HAZARD_REGIONS = 9
 
-internal enum class PublicHazardKind(val wireName: String) {
-    ROAD_DAMAGE("road_damage"),
-    ROUGH_ROAD("rough_road"),
+private val REGION_ID_PATTERN =
+    Regex("gh([3-8]):([0123456789bcdefghjkmnpqrstuvwxyz]{3,8})")
+
+internal enum class PublicHazardKind(
+    val wireName: String,
+    val warningLabel: String,
+) {
+    ROAD_DAMAGE("road_damage", "Road damage"),
+    ROUGH_ROAD("rough_road", "Rough road"),
+    OBSTRUCTION("obstruction", "Road obstruction"),
+    FLOODING("flooding", "Flooding"),
+    MANHOLE_HAZARD("manhole_hazard", "Manhole hazard"),
+    ROAD_CONSTRUCTION("road_construction", "Road construction"),
+    DISABLED_VEHICLE("disabled_vehicle", "Disabled vehicle"),
     ;
 
     companion object {
@@ -53,8 +66,7 @@ internal data class RegionalHazardSnapshot(
     val hazards: List<PublicRoadHazard>,
 ) {
     init {
-        val region = Regex("gh([3-8]):([0123456789bcdefghjkmnpqrstuvwxyz]{3,8})")
-            .matchEntire(regionId)
+        val region = REGION_ID_PATTERN.matchEntire(regionId)
         require(region != null && region.groupValues[1].toInt() == region.groupValues[2].length)
         require(version == null || version.matches(Regex("[0-9a-f]{64}")))
         require(generatedAtMillis == null || generatedAtMillis >= 0)
@@ -139,6 +151,73 @@ internal fun regionalHazardId(
     return "gh$precision:$cell"
 }
 
+internal fun adjacentRegionalHazardIds(regionId: String): List<String> {
+    val match = requireNotNull(REGION_ID_PATTERN.matchEntire(regionId))
+    val precision = match.groupValues[1].toInt()
+    require(precision == match.groupValues[2].length)
+    val bounds = decodeGeohashBounds(match.groupValues[2])
+    val latitudeStep = bounds.latitudeHigh - bounds.latitudeLow
+    val longitudeStep = bounds.longitudeHigh - bounds.longitudeLow
+    val latitude = (bounds.latitudeLow + bounds.latitudeHigh) / 2
+    val longitude = (bounds.longitudeLow + bounds.longitudeHigh) / 2
+    return listOf(
+        0 to 0,
+        1 to 0,
+        -1 to 0,
+        0 to 1,
+        0 to -1,
+        1 to 1,
+        1 to -1,
+        -1 to 1,
+        -1 to -1,
+    ).map { (latitudeOffset, longitudeOffset) ->
+        regionalHazardId(
+            latitude = (latitude + latitudeOffset * latitudeStep)
+                .coerceIn(-90.0 + latitudeStep / 2, 90.0 - latitudeStep / 2),
+            longitude = wrapLongitude(longitude + longitudeOffset * longitudeStep),
+            precision = precision,
+        )
+    }.distinct()
+}
+
+private data class GeohashBounds(
+    val latitudeLow: Double,
+    val latitudeHigh: Double,
+    val longitudeLow: Double,
+    val longitudeHigh: Double,
+)
+
+private fun decodeGeohashBounds(cell: String): GeohashBounds {
+    val alphabet = "0123456789bcdefghjkmnpqrstuvwxyz"
+    var latitudeLow = -90.0
+    var latitudeHigh = 90.0
+    var longitudeLow = -180.0
+    var longitudeHigh = 180.0
+    var useLongitude = true
+    cell.forEach { character ->
+        val value = alphabet.indexOf(character)
+        require(value >= 0)
+        for (bit in 4 downTo 0) {
+            val upperHalf = value and (1 shl bit) != 0
+            if (useLongitude) {
+                val middle = (longitudeLow + longitudeHigh) / 2
+                if (upperHalf) longitudeLow = middle else longitudeHigh = middle
+            } else {
+                val middle = (latitudeLow + latitudeHigh) / 2
+                if (upperHalf) latitudeLow = middle else latitudeHigh = middle
+            }
+            useLongitude = !useLongitude
+        }
+    }
+    return GeohashBounds(latitudeLow, latitudeHigh, longitudeLow, longitudeHigh)
+}
+
+private fun wrapLongitude(longitude: Double): Double = when {
+    longitude < -180.0 -> longitude + 360.0
+    longitude >= 180.0 -> longitude - 360.0
+    else -> longitude
+}
+
 internal class RegionalSnapshotRefreshGate(
     private val refreshIntervalMillis: Long = 15 * 60 * 1_000L,
     private val maxTrackedRegions: Int = 8,
@@ -201,6 +280,7 @@ internal class HazardSnapshotClient(baseUrl: String) {
             (URL("$baseUrl/v1/regions/$regionId/hazards").openConnection() as HttpURLConnection)
                 .apply {
                     requestMethod = "GET"
+                    instanceFollowRedirects = false
                     connectTimeout = 10_000
                     readTimeout = 15_000
                     setRequestProperty("Accept", "application/json")
@@ -224,40 +304,249 @@ internal class HazardSnapshotClient(baseUrl: String) {
     }
 }
 
+private const val HAZARD_CACHE_INDEX_SCHEMA_VERSION = 1
+private const val HAZARD_CACHE_INDEX_FILE = "hazard-snapshot-index.json"
+private const val LEGACY_HAZARD_CACHE_FILE = "nearby-hazard-snapshot.json"
+private const val HAZARD_CACHE_FILE_PREFIX = "hazard-snapshot-gh"
+
+internal data class HazardCacheIndex(
+    val currentRegionId: String?,
+    val regions: List<String>,
+) {
+    init {
+        require(regions.size <= MAX_CACHED_HAZARD_REGIONS)
+        require(regions.distinct().size == regions.size)
+        regions.forEach { requireNotNull(REGION_ID_PATTERN.matchEntire(it)) }
+        require(currentRegionId == null || currentRegionId in regions)
+    }
+}
+
+internal fun encodeHazardCacheIndex(index: HazardCacheIndex): String = JSONObject()
+    .put("schema_version", HAZARD_CACHE_INDEX_SCHEMA_VERSION)
+    .put("current_region_id", index.currentRegionId)
+    .put("regions", JSONArray(index.regions))
+    .toString()
+
+internal fun validateHazardCacheIndexSchema(schemaVersion: Int) {
+    if (schemaVersion > HAZARD_CACHE_INDEX_SCHEMA_VERSION) {
+        throw UnsupportedHazardCacheSchema(schemaVersion)
+    }
+    require(schemaVersion == HAZARD_CACHE_INDEX_SCHEMA_VERSION) {
+        "Unsupported hazard cache index schema"
+    }
+}
+
+internal fun decodeHazardCacheIndex(serialized: String): HazardCacheIndex {
+    val root = JSONObject(serialized)
+    val schemaVersion = root.getInt("schema_version")
+    validateHazardCacheIndexSchema(schemaVersion)
+    val regionsJson = root.getJSONArray("regions")
+    return HazardCacheIndex(
+        currentRegionId = root.nullableString("current_region_id"),
+        regions = List(regionsJson.length()) { regionsJson.getString(it) },
+    )
+}
+
+internal fun hazardCacheIndexAfterWrite(
+    existing: HazardCacheIndex,
+    regionId: String,
+    makeCurrent: Boolean,
+    maxRegions: Int = MAX_CACHED_HAZARD_REGIONS,
+): HazardCacheIndex {
+    require(maxRegions in 1..MAX_CACHED_HAZARD_REGIONS)
+    requireNotNull(REGION_ID_PATTERN.matchEntire(regionId))
+    val current = if (makeCurrent || existing.currentRegionId == null) {
+        regionId
+    } else {
+        existing.currentRegionId
+    }
+    val regions = existing.regions.toMutableList().apply {
+        remove(regionId)
+        add(regionId)
+        while (size > maxRegions) {
+            val evict = firstOrNull { it != current } ?: first()
+            remove(evict)
+        }
+    }
+    return HazardCacheIndex(current, regions)
+}
+
+internal fun hazardCacheIndexForLegacySnapshot(
+    snapshot: RegionalHazardSnapshot,
+): HazardCacheIndex = HazardCacheIndex(snapshot.regionId, listOf(snapshot.regionId))
+
+internal fun shouldMigrateLegacyHazardCache(
+    indexExists: Boolean,
+    legacyExists: Boolean,
+): Boolean = !indexExists && legacyExists
+
 internal class HazardSnapshotCache(context: Context) {
-    // ponytail: one current region; add adjacent-cell prefetch only after field evidence needs it.
-    private val file = AtomicFile(context.filesDir.resolve("nearby-hazard-snapshot.json"))
+    private val appContext = context.applicationContext
+    private val directory = appContext.filesDir
+    private val indexFile = AtomicFile(directory.resolve(HAZARD_CACHE_INDEX_FILE))
+    private val legacyFile = AtomicFile(directory.resolve(LEGACY_HAZARD_CACHE_FILE))
 
     fun read(): RegionalHazardSnapshot? = lock.withLock {
-        val input = try {
-            file.openRead()
-        } catch (_: FileNotFoundException) {
+        val index = try {
+            readIndexLocked()
+        } catch (_: UnsupportedHazardCacheSchema) {
             return null
         }
-        runCatching {
-            input.use { parseRegionalHazardSnapshot(it.readUtf8Bounded()) }
-        }.getOrNull()
+        index.currentRegionId?.let(::readSnapshotLocked)
     }
 
-    fun replace(serialized: String): RegionalHazardSnapshot {
+    fun read(regionId: String): RegionalHazardSnapshot? = lock.withLock {
+        requireNotNull(REGION_ID_PATTERN.matchEntire(regionId))
+        val index = try {
+            readIndexLocked()
+        } catch (_: UnsupportedHazardCacheSchema) {
+            return null
+        }
+        if (regionId !in index.regions) return null
+        readSnapshotLocked(regionId)
+    }
+
+    fun replace(
+        serialized: String,
+        makeCurrent: Boolean = true,
+    ): RegionalHazardSnapshot {
         val snapshot = parseRegionalHazardSnapshot(serialized)
         lock.withLock {
             check(acceptingSnapshots) { "Hazard snapshot storage is disabled" }
-            val output = file.startWrite()
-            try {
-                output.write(serialized.toByteArray(Charsets.UTF_8))
-                file.finishWrite(output)
-            } catch (error: Exception) {
-                file.failWrite(output)
-                throw error
+            val oldIndex = readIndexLocked()
+            writeAtomic(snapshotFile(snapshot.regionId), serialized)
+            val newIndex = hazardCacheIndexAfterWrite(
+                existing = oldIndex,
+                regionId = snapshot.regionId,
+                makeCurrent = makeCurrent,
+            )
+            writeIndexLocked(newIndex)
+            (oldIndex.regions - newIndex.regions.toSet()).forEach {
+                AtomicFile(snapshotFile(it)).delete()
             }
         }
+        StatusChangeNotifier.notify(appContext)
         return snapshot
     }
 
-    fun clear() = lock.withLock {
-        acceptingSnapshots = false
-        file.delete()
+    fun markCurrent(regionId: String) {
+        val changed = lock.withLock {
+            check(acceptingSnapshots) { "Hazard snapshot storage is disabled" }
+            val oldIndex = readIndexLocked()
+            if (regionId in oldIndex.regions) {
+                writeIndexLocked(
+                    hazardCacheIndexAfterWrite(
+                        existing = oldIndex,
+                        regionId = regionId,
+                        makeCurrent = true,
+                    ),
+                )
+                true
+            } else {
+                false
+            }
+        }
+        if (changed) StatusChangeNotifier.notify(appContext)
+    }
+
+    fun clear() {
+        lock.withLock {
+            acceptingSnapshots = false
+            directory.listFiles()
+                ?.filter { it.name.startsWith(HAZARD_CACHE_FILE_PREFIX) }
+                ?.forEach { AtomicFile(it).delete() }
+            legacyFile.delete()
+            indexFile.delete()
+        }
+        StatusChangeNotifier.notify(appContext)
+    }
+
+    private fun readIndexLocked(): HazardCacheIndex {
+        migrateLegacyLocked()
+        val input = try {
+            indexFile.openRead()
+        } catch (_: FileNotFoundException) {
+            return recoverIndexLocked()
+        }
+        return try {
+            input.use { decodeHazardCacheIndex(it.readUtf8Bounded()) }
+        } catch (unsupported: UnsupportedHazardCacheSchema) {
+            throw unsupported
+        } catch (_: Exception) {
+            recoverIndexLocked()
+        }
+    }
+
+    private fun migrateLegacyLocked() {
+        if (
+            !shouldMigrateLegacyHazardCache(
+                indexExists = indexFile.baseFile.exists(),
+                legacyExists = legacyFile.baseFile.exists(),
+            )
+        ) {
+            return
+        }
+        val input = try {
+            legacyFile.openRead()
+        } catch (_: FileNotFoundException) {
+            return
+        }
+        val serialized = runCatching { input.use { it.readUtf8Bounded() } }.getOrNull()
+            ?: return
+        val snapshot = runCatching { parseRegionalHazardSnapshot(serialized) }.getOrNull()
+            ?: return
+        writeAtomic(snapshotFile(snapshot.regionId), serialized)
+        writeIndexLocked(hazardCacheIndexForLegacySnapshot(snapshot))
+        legacyFile.delete()
+    }
+
+    private fun recoverIndexLocked(): HazardCacheIndex {
+        val snapshots = directory.listFiles()
+            ?.filter {
+                it.name.startsWith(HAZARD_CACHE_FILE_PREFIX) &&
+                    it.name.endsWith(".json")
+            }
+            ?.mapNotNull { candidate ->
+                runCatching {
+                    val snapshot = AtomicFile(candidate).openRead().use {
+                        parseRegionalHazardSnapshot(it.readUtf8Bounded())
+                    }
+                    candidate.lastModified() to snapshot.regionId
+                }.getOrNull()
+            }
+            ?.sortedBy { it.first }
+            ?.map { it.second }
+            ?.distinct()
+            ?.takeLast(MAX_CACHED_HAZARD_REGIONS)
+            .orEmpty()
+        val recovered = HazardCacheIndex(snapshots.lastOrNull(), snapshots)
+        if (recovered.regions.isNotEmpty() && acceptingSnapshots) writeIndexLocked(recovered)
+        return recovered
+    }
+
+    private fun readSnapshotLocked(regionId: String): RegionalHazardSnapshot? =
+        runCatching {
+            AtomicFile(snapshotFile(regionId)).openRead().use {
+                parseRegionalHazardSnapshot(it.readUtf8Bounded())
+            }.also { require(it.regionId == regionId) }
+        }.getOrNull()
+
+    private fun snapshotFile(regionId: String): File =
+        directory.resolve("hazard-snapshot-${regionId.replace(':', '-')}.json")
+
+    private fun writeIndexLocked(index: HazardCacheIndex) =
+        writeAtomic(indexFile.baseFile, encodeHazardCacheIndex(index))
+
+    private fun writeAtomic(destination: File, serialized: String) {
+        val atomicFile = AtomicFile(destination)
+        val output = atomicFile.startWrite()
+        try {
+            output.write(serialized.toByteArray(Charsets.UTF_8))
+            atomicFile.finishWrite(output)
+        } catch (error: Exception) {
+            atomicFile.failWrite(output)
+            throw error
+        }
     }
 
     companion object {
@@ -271,6 +560,9 @@ internal class HazardSnapshotCache(context: Context) {
         }
     }
 }
+
+internal class UnsupportedHazardCacheSchema(version: Int) :
+    IllegalArgumentException("Unsupported hazard cache index schema $version")
 
 internal data class HazardRefreshResult(
     val snapshot: RegionalHazardSnapshot?,
@@ -292,17 +584,21 @@ internal class NearbyHazardSnapshots(
         longitude: Double,
         refreshGate: RegionalSnapshotRefreshGate? = null,
     ): HazardRefreshResult {
-        val existing = cache.read()
         val regionId = regionalHazardId(latitude, longitude)
+        val existing = cache.read(regionId)
         return try {
-            when (
+            val result = when (
                 val result = client.download(
                     regionId,
-                    existing?.takeIf { it.regionId == regionId }?.version,
+                    existing?.version,
                 )
             ) {
-                HazardSnapshotDownload.NotModified ->
+                HazardSnapshotDownload.NotModified -> {
+                    if (refreshGate == null || refreshGate.isCurrent(regionId)) {
+                        cache.markCurrent(regionId)
+                    }
                     HazardRefreshResult(existing, changed = false, error = false)
+                }
 
                 is HazardSnapshotDownload.Updated -> {
                     val stored = refreshGate?.storeIfCurrent(regionId) {
@@ -319,29 +615,41 @@ internal class NearbyHazardSnapshots(
                     )
                 }
             }
+            if (
+                result.snapshot != null &&
+                (refreshGate == null || refreshGate.isCurrent(regionId))
+            ) {
+                prefetchAdjacent(regionId)
+            }
+            result
         } catch (_: Exception) {
-            HazardRefreshResult(cache.read(), changed = false, error = true)
+            HazardRefreshResult(cache.read(regionId), changed = false, error = true)
         }
     }
 
     fun clear() = cache.clear()
+
+    private fun prefetchAdjacent(regionId: String) {
+        adjacentRegionalHazardIds(regionId).drop(1).forEach { adjacent ->
+            runCatching {
+                when (
+                    val result = client.download(
+                        adjacent,
+                        cache.read(adjacent)?.version,
+                    )
+                ) {
+                    HazardSnapshotDownload.NotModified -> Unit
+                    is HazardSnapshotDownload.Updated ->
+                        cache.replace(result.serialized, makeCurrent = false)
+                }
+            }
+        }
+    }
 }
 
 internal class HazardSnapshotUnavailable(val statusCode: Int) :
     Exception("Hazard snapshot request failed")
 
 private fun InputStream.readUtf8Bounded(): String {
-    val output = ByteArrayOutputStream()
-    val buffer = ByteArray(8_192)
-    var total = 0
-    while (true) {
-        val count = read(buffer)
-        if (count < 0) break
-        total += count
-        require(total <= MAX_HAZARD_SNAPSHOT_BYTES) {
-            "Hazard snapshot response is too large"
-        }
-        output.write(buffer, 0, count)
-    }
-    return output.toString(Charsets.UTF_8.name())
+    return readUtf8AtMost(MAX_HAZARD_SNAPSHOT_BYTES)
 }

@@ -68,14 +68,11 @@ internal fun findUpcomingHazard(
         }
         .minByOrNull { (_, distance) -> distance }
         ?.let { (hazard, distance) ->
-            val label = when (hazard.kind) {
-                PublicHazardKind.ROAD_DAMAGE -> "Road damage"
-                PublicHazardKind.ROUGH_ROAD -> "Rough road"
-            }
             OfflineHazardWarning(
                 hazard = hazard,
                 distanceMetres = distance,
-                message = "$label about ${distance.roundToInt()} metres ahead.",
+                message = "${hazard.kind.warningLabel} about " +
+                    "${distance.roundToInt()} metres ahead.",
             )
         }
 }

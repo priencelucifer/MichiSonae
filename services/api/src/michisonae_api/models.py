@@ -31,7 +31,15 @@ class RoadObservation(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     location_accuracy_m: float = Field(gt=0, le=500)
     speed_mps: float = Field(ge=0, le=100)
-    kind: Literal["road_damage", "rough_road"]
+    kind: Literal[
+        "road_damage",
+        "rough_road",
+        "obstruction",
+        "flooding",
+        "manhole_hazard",
+        "road_construction",
+        "disabled_vehicle",
+    ]
     severity: float = Field(ge=0, le=1)
     confidence: float = Field(ge=0, le=1)
     source: DetectionSource
@@ -88,7 +96,15 @@ class PublicHazard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hazard_id: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{24}$")]
-    kind: Literal["road_damage", "rough_road"]
+    kind: Literal[
+        "road_damage",
+        "rough_road",
+        "obstruction",
+        "flooding",
+        "manhole_hazard",
+        "road_construction",
+        "disabled_vehicle",
+    ]
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     severity: float = Field(ge=0, le=1)

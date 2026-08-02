@@ -6,6 +6,21 @@ import org.junit.Test
 
 class BackendStatusTest {
     @Test
+    fun unreadableQueueIsNeverReportedAsFullyUploaded() {
+        val status = backendStatus(
+            pendingUploadCount = null,
+            hasNetwork = true,
+            lastSyncFailureAtMillis = null,
+            hasCachedSnapshot = false,
+            snapshotGeneratedAtMillis = null,
+            nowMillis = 1_000,
+        )
+
+        assertTrue(status.uploadLabel.contains("recovery"))
+        assertTrue(status.uploadLabel.contains("none were marked uploaded"))
+    }
+
+    @Test
     fun offlineStatusKeepsPendingCountAndSavedDataVisible() {
         val status = backendStatus(
             pendingUploadCount = 3,

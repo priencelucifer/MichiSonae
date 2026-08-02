@@ -42,6 +42,7 @@ internal enum class Elm327ResponseStatus {
     NO_DATA,
     STOPPED,
     UNABLE_TO_CONNECT,
+    ADAPTER_ERROR,
     INVALID,
 }
 
@@ -63,6 +64,7 @@ internal object Elm327Parser {
             "UNABLE TO CONNECT" in normalized -> Elm327ResponseStatus.UNABLE_TO_CONNECT
             "STOPPED" in normalized -> Elm327ResponseStatus.STOPPED
             "NO DATA" in normalized -> Elm327ResponseStatus.NO_DATA
+            ADAPTER_ERRORS.any { it in normalized } -> Elm327ResponseStatus.ADAPTER_ERROR
             else -> null
         }
         if (adapterStatus != null) return Elm327Response(adapterStatus)
@@ -220,7 +222,10 @@ internal object Elm327Parser {
     )
 
     private fun frame(line: String): Frame? {
-        val clean = line.trim()
+        val clean = line
+            .trim()
+            .replace(Regex("^\\d+:\\s*"), "")
+            .replace(Regex("^([0-9A-F]{3}|[0-9A-F]{8}):\\s*"), "$1 ")
         if (
             clean.isEmpty() ||
             clean == "OK" ||
@@ -308,6 +313,18 @@ internal object Elm327Parser {
         }
         return complete.sortedBy { it.first }.map { it.second }
     }
+
+    private val ADAPTER_ERRORS = setOf(
+        "BUS ERROR",
+        "CAN ERROR",
+        "BUFFER FULL",
+        "DATA ERROR",
+        "FB ERROR",
+        "LV RESET",
+        "BUS INIT: ERROR",
+        "ERROR",
+        "?",
+    )
 }
 
 internal object Elm327Simulator {

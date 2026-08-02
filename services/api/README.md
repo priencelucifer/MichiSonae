@@ -18,6 +18,11 @@ ID for different content returns `409` and rolls back the entire batch.
 Database, pool, schema, or outbox failures return `503`; they are never
 acknowledged as accepted.
 
+Stopped-user manual hazards use the same transaction and retry contract as
+automatic phone observations. Migration `0007` adds obstruction, flooding,
+manhole, construction and disabled-vehicle kinds without rewriting any
+previously applied migration.
+
 The application never runs migrations automatically. A controlled migration
 job must complete before deployment:
 
