@@ -8,12 +8,12 @@ version = "1.0.0"
 description = "MichiSonae road-observation API"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi==0.140.7",
+  "fastapi==0.141.1",
   "psycopg[binary]==3.3.4",
   "psycopg-pool==3.3.1",
   "prometheus-client==0.26.0",
   "pydantic-settings==2.14.2",
-  "uvicorn[standard]==0.51.0",
+  "uvicorn[standard]==0.52.0",
 ]
 
 [project.optional-dependencies]
@@ -22,7 +22,7 @@ dev = [
   "mypy>=1.19,<2",
   "pytest>=9,<10",
   "pyyaml==6.0.3",
-  "ruff==0.16.0",
+  "ruff==0.16.1",
 ]
 
 [project.scripts]
